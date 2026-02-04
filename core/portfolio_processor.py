@@ -6,6 +6,31 @@ from utils.exchange_rates import get_exchange_rate_history, get_rate_at_date
 from utils.price_fetcher import get_current_prices
 
 
+def average_cost(shares, prices, commissions=0):
+    """
+    Calculate the average cost (cost basis) of a stock position.
+    
+    Formula: (sum of (shares * price) + commissions) / total shares
+    
+    Args:
+        shares: list of number of shares bought
+        prices: list of prices per share
+        commissions: total commissions paid (optional)
+    
+    Returns:
+        float: Average cost per share
+    
+    Example:
+        shares = [100, 50]
+        prices = [10, 12]
+        avg_cost = average_cost(shares, prices)
+        # Returns: 10.67 = ((100*10) + (50*12)) / 150
+    """
+    total_cost = sum(s * p for s, p in zip(shares, prices)) + commissions
+    total_shares = sum(shares)
+    return total_cost / total_shares if total_shares > 0 else 0
+
+
 def process_portfolio(df, target_currency, refresh_key=0):
     """
     Calculates portfolio metrics, average cost, P&L, FOMO.
@@ -29,7 +54,16 @@ def process_portfolio(df, target_currency, refresh_key=0):
 
     df = df.sort_values(by='Date')
     
-    holdings = {}  # {ticker: {'qty': 0, 'total_cost': 0, 'pmc': 0, 'currency': ''}}
+    # holdings structure:
+    # {ticker: {
+    #   'qty': total shares,
+    #   'total_cost_orig': sum of (shares * price) in ORIGINAL currency,
+    #   'total_cost_conv': sum of (shares * price) in TARGET currency (for P&L),
+    #   'pmc_orig': avg price in ORIGINAL currency,
+    #   'pmc_conv': avg price in TARGET currency (for P&L),
+    #   'currency': original currency
+    # }}
+    holdings = {}
     closed_positions = []  # List for sales history
     
     # Pre-fetch exchange rates for currencies involved
@@ -51,7 +85,14 @@ def process_portfolio(df, target_currency, refresh_key=0):
         
         # Setup holdings if new
         if t not in holdings:
-            holdings[t] = {'qty': 0, 'total_cost': 0.0, 'pmc': 0.0}
+            holdings[t] = {
+                'qty': 0,
+                'total_cost_orig': 0.0,  # Total cost in original currency
+                'total_cost_conv': 0.0,  # Total cost in target currency (for P&L)
+                'pmc_orig': 0.0,         # Avg price in original currency
+                'pmc_conv': 0.0,         # Avg price in target currency (for P&L)
+                'currency': ''
+            }
             
         # Get Exchange Rate
         if curr_orig == target_currency:
@@ -63,27 +104,44 @@ def process_portfolio(df, target_currency, refresh_key=0):
         price_conv = price_orig * rate
         
         if row['Type'] == 'BUY':
-            # Update weighted average cost
+            # Update weighted average cost (Prezzo Medio di Carico - PMC)
+            # Formula: Avg Buy Price = sum(shares_i * price_i) / sum(shares_i)
+            # IMPORTANTE: Il calcolo viene fatto nella VALUTA ORIGINALE
+            # Example: 
+            #   Buy 100 @ $10 = $1000
+            #   Buy 50 @ $12 = $600
+            #   Avg = ($1000 + $600) / (100 + 50) = $1600 / 150 = $10.67
+            
             prev_qty = holdings[t]['qty']
-            prev_cost = holdings[t]['total_cost']
+            prev_cost_orig = holdings[t]['total_cost_orig']  # In original currency
+            prev_cost_conv = holdings[t]['total_cost_conv']  # In target currency
             
-            # Additional cost
-            add_cost = qty * price_conv
+            # Cost of this purchase in both currencies
+            add_cost_orig = qty * price_orig  # ORIGINAL currency
+            add_cost_conv = qty * price_conv  # CONVERTED currency
             
+            # Update total shares and total costs
             new_qty = prev_qty + qty
-            new_total_cost = prev_cost + add_cost
+            new_total_cost_orig = prev_cost_orig + add_cost_orig
+            new_total_cost_conv = prev_cost_conv + add_cost_conv
             
             holdings[t]['qty'] = new_qty
-            holdings[t]['total_cost'] = new_total_cost
+            holdings[t]['total_cost_orig'] = new_total_cost_orig
+            holdings[t]['total_cost_conv'] = new_total_cost_conv
             holdings[t]['currency'] = curr_orig
+            
+            # Calculate new average prices: total_cost / total_shares
             if new_qty > 0:
-                holdings[t]['pmc'] = new_total_cost / new_qty
+                holdings[t]['pmc_orig'] = new_total_cost_orig / new_qty  # ORIGINAL currency
+                holdings[t]['pmc_conv'] = new_total_cost_conv / new_qty  # CONVERTED currency
             
         elif row['Type'] == 'SELL':
-            # Calculate Realized P&L using the average cost at time of sale
-            pmc_at_sale = holdings[t]['pmc']
-            proceeds = qty * price_conv
-            cost_basis = qty * pmc_at_sale
+            # Calculate Realized P&L using the average cost in target currency
+            pmc_orig_at_sale = holdings[t]['pmc_orig']  # Avg price in original currency
+            pmc_conv_at_sale = holdings[t]['pmc_conv']  # Avg price in target currency (for P&L)
+            
+            proceeds = qty * price_conv  # Proceeds in target currency
+            cost_basis = qty * pmc_conv_at_sale  # Cost basis in target currency
             
             realized_pl = proceeds - cost_basis
             total_realized_pl += realized_pl
@@ -93,7 +151,7 @@ def process_portfolio(df, target_currency, refresh_key=0):
                 'Date': date_tx,
                 'Ticker': t,
                 'Qty': qty,
-                'Avg Buy Price': pmc_at_sale / rate,  # Average buy price in original currency
+                'Avg Buy Price': pmc_orig_at_sale,  # Average buy price in ORIGINAL currency
                 'Sell Price': price_orig,
                 'Value': price_orig * qty,  # Sell Price * Qty in original currency
                 'Proceeds': proceeds,  # Proceeds in base currency
@@ -101,15 +159,18 @@ def process_portfolio(df, target_currency, refresh_key=0):
                 'Currency': curr_orig
             })
             
-            # Update holding (reduce quantity and total cost proportionally)
+            # Update holding (reduce quantity and both total costs proportionally)
             holdings[t]['qty'] -= qty
-            holdings[t]['total_cost'] -= cost_basis
+            holdings[t]['total_cost_orig'] -= qty * pmc_orig_at_sale
+            holdings[t]['total_cost_conv'] -= cost_basis
             
-            # If qty goes to 0, reset total_cost
+            # If qty goes to 0, reset everything
             if holdings[t]['qty'] <= 1e-9:
                 holdings[t]['qty'] = 0
-                holdings[t]['total_cost'] = 0.0
-                holdings[t]['pmc'] = 0.0
+                holdings[t]['total_cost_orig'] = 0.0
+                holdings[t]['total_cost_conv'] = 0.0
+                holdings[t]['pmc_orig'] = 0.0
+                holdings[t]['pmc_conv'] = 0.0
 
     # --- Live Data ---
     active_tickers = [t for t, data in holdings.items() if data['qty'] > 0]
@@ -173,7 +234,8 @@ def _build_open_positions(active_tickers, holdings, current_prices,
     
     for t in active_tickers:
         qty = holdings[t]['qty']
-        pmc = holdings[t]['pmc']
+        pmc_orig = holdings[t]['pmc_orig']  # Avg price in ORIGINAL currency
+        pmc_conv = holdings[t]['pmc_conv']  # Avg price in TARGET currency
         curr_t = holdings[t]['currency']
         
         # Live price in original currency
@@ -187,12 +249,8 @@ def _build_open_positions(active_tickers, holdings, current_prices,
             rate_live = rs.iloc[-1] if rs is not None and not rs.empty else 1.0
              
         live_price_conv = live_price_orig * rate_live
-        pmc_orig = pmc / rate_live  # Average cost in original currency
         
-        market_value_conv = qty * live_price_conv
-        unrealized_pl_conv = (live_price_conv - pmc) * qty
-        
-        # Values in original currency for display
+        # Calculate P&L in original currency for display
         market_value_orig = qty * live_price_orig
         unrealized_pl_orig = (live_price_orig - pmc_orig) * qty
         pl_percent = ((live_price_orig - pmc_orig) / pmc_orig * 100) if pmc_orig > 0 else 0
@@ -200,7 +258,7 @@ def _build_open_positions(active_tickers, holdings, current_prices,
         open_positions.append({
             'Ticker': t,
             'Qty': qty,
-            'Avg Price': round(pmc_orig, 2),
+            'Avg Price': round(pmc_orig, 2),  # Already in original currency
             'Current Price': round(live_price_orig, 2),
             'Initial Value': round(pmc_orig * qty, 2),
             'Current Value': round(market_value_orig, 2),
