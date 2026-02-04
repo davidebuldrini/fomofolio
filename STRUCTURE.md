@@ -1,156 +1,156 @@
-# InvestTrack - Struttura del Codice
+# InvestTrack - Code Structure
 
-## 📁 Organizzazione del Progetto
+## 📁 Project Organization
 
-Il codice è stato ristrutturato in una architettura modulare per migliorare leggibilità e manutenibilità.
+The code has been restructured into a modular architecture to improve readability and maintainability.
 
 ```
 investtrack/
 │
-├── app.py                          # Entry point principale dell'applicazione
-├── config.py                       # Costanti e configurazioni globali
+├── app.py                          # Main application entry point
+├── config.py                       # Global constants and configurations
 │
-├── core/                           # Logica di business
+├── core/                           # Business logic
 │   ├── __init__.py
-│   └── portfolio_processor.py      # Elaborazione portfolio, calcolo P&L e FOMO
+│   └── portfolio_processor.py      # Portfolio processing, P&L and FOMO calculation
 │
-├── utils/                          # Funzioni utilitarie
+├── utils/                          # Utility functions
 │   ├── __init__.py
-│   ├── exchange_rates.py           # Gestione tassi di cambio
-│   └── price_fetcher.py            # Download prezzi azionari
+│   ├── exchange_rates.py           # Exchange rate management
+│   └── price_fetcher.py            # Stock price download
 │
-└── ui/                             # Componenti interfaccia utente
+└── ui/                             # User interface components
     ├── __init__.py
-    ├── sidebar.py                  # Barra laterale con controlli
-    └── main_view.py                # Vista principale con metriche e tabelle
+    ├── sidebar.py                  # Sidebar with controls
+    └── main_view.py                # Main view with metrics and tables
 ```
 
-## 📄 Descrizione dei Moduli
+## 📄 Module Descriptions
 
 ### `app.py` - Entry Point
-- File principale che orchestra l'applicazione
-- Gestisce l'inizializzazione dello stato della sessione
-- Coordina il rendering dei componenti UI
-- Solo ~60 righe vs ~450 righe originali
+- Main file that orchestrates the application
+- Manages session state initialization
+- Coordinates UI component rendering
+- Only ~60 lines vs ~450 original lines
 
-### `config.py` - Configurazione
-- Costanti globali (valute supportate, titolo pagina, layout)
-- Parametri di cache (TTL per i prezzi)
-- Facile da modificare senza toccare la logica
+### `config.py` - Configuration
+- Global constants (supported currencies, page title, layout)
+- Cache parameters (TTL for prices)
+- Easy to modify without touching the logic
 
-### `core/portfolio_processor.py` - Logica di Business
-**Funzioni principali:**
-- `process_portfolio()`: Elabora transazioni e calcola metriche
-- `_build_open_positions()`: Costruisce DataFrame posizioni aperte
-- `_build_sales_history()`: Costruisce DataFrame cronologia vendite con FOMO
+### `core/portfolio_processor.py` - Business Logic
+**Main functions:**
+- `process_portfolio()`: Processes transactions and calculates metrics
+- `_build_open_positions()`: Builds open positions DataFrame
+- `_build_sales_history()`: Builds sales history DataFrame with FOMO
 
-**Responsabilità:**
-- Calcolo costo medio ponderato (PMC)
-- Calcolo P&L realizzato e non realizzato
-- Analisi FOMO sulle vendite
-- Gestione delle posizioni (apertura/chiusura)
+**Responsibilities:**
+- Weighted average cost calculation (PMC)
+- Realized and unrealized P&L calculation
+- FOMO analysis on sales
+- Position management (opening/closing)
 
-### `utils/exchange_rates.py` - Tassi di Cambio
-**Funzioni:**
-- `get_exchange_rate_history()`: Scarica storico tassi di cambio da Yahoo Finance
-- `get_rate_at_date()`: Recupera il tasso per una data specifica
+### `utils/exchange_rates.py` - Exchange Rates
+**Functions:**
+- `get_exchange_rate_history()`: Downloads historical exchange rates from Yahoo Finance
+- `get_rate_at_date()`: Retrieves the rate for a specific date
 
-**Caratteristiche:**
-- Cache con `@st.cache_data`
-- Gestione valute identiche
-- Fallback su tassi inversi
-- Gestione timezone-aware
+**Features:**
+- Cache with `@st.cache_data`
+- Identical currency handling
+- Fallback on inverse rates
+- Timezone-aware handling
 
-### `utils/price_fetcher.py` - Prezzi Azionari
-**Funzioni:**
-- `get_current_prices()`: Scarica prezzi correnti per lista di ticker
+### `utils/price_fetcher.py` - Stock Prices
+**Functions:**
+- `get_current_prices()`: Downloads current prices for a list of tickers
 
-**Caratteristiche:**
-- Cache con TTL configurabile
-- Download batch per efficienza
-- Gestione ticker singoli e multipli
-- Periodo di 5 giorni per evitare problemi weekend/festivi
+**Features:**
+- Cache with configurable TTL
+- Batch download for efficiency
+- Single and multiple ticker handling
+- 5-day period to avoid weekend/holiday issues
 
-### `ui/sidebar.py` - Barra Laterale
-**Funzioni:**
-- `render_sidebar()`: Rendering completo della sidebar
-- `_render_upload_section()`: Sezione import CSV
-- `_render_export_section()`: Sezione export CSV
-- `_render_transaction_form()`: Form inserimento transazione
+### `ui/sidebar.py` - Sidebar
+**Functions:**
+- `render_sidebar()`: Complete sidebar rendering
+- `_render_upload_section()`: CSV import section
+- `_render_export_section()`: CSV export section
+- `_render_transaction_form()`: Transaction entry form
 
-**Responsabilità:**
-- Selezione valuta portfolio
-- Refresh manuale prezzi
-- Import/Export dati
-- Inserimento transazioni
+**Responsibilities:**
+- Portfolio currency selection
+- Manual price refresh
+- Data Import/Export
+- Transaction entry
 
-### `ui/main_view.py` - Vista Principale
-**Funzioni:**
-- `render_main_view()`: Vista completa con metriche e tabelle
-- `render_empty_state()`: Stato vuoto quando non ci sono transazioni
-- `_render_metrics()`: Metriche principali (valore, P&L)
-- `_render_open_positions()`: Tabella posizioni aperte
-- `_render_sales_history()`: Tabella cronologia vendite
-- `_render_fomo_stats()`: Statistiche FOMO
+### `ui/main_view.py` - Main View
+**Functions:**
+- `render_main_view()`: Complete view with metrics and tables
+- `render_empty_state()`: Empty state when there are no transactions
+- `_render_metrics()`: Main metrics (value, P&L)
+- `_render_open_positions()`: Open positions table
+- `_render_sales_history()`: Sales history table
+- `_render_fomo_stats()`: FOMO statistics
 
-**Caratteristiche:**
-- Formattazione colori per P&L (rosso/verde)
-- Tabs per separare posizioni aperte e vendite
-- Tooltips esplicativi
+**Features:**
+- Color formatting for P&L (red/green)
+- Tabs to separate open positions and sales
+- Explanatory tooltips
 
-## 🎯 Vantaggi della Nuova Struttura
+## 🎯 Advantages of the New Structure
 
-### 1. **Separazione delle Responsabilità**
-- UI separata dalla logica di business
-- Funzioni utilitarie isolate
-- Configurazione centralizzata
+### 1. **Separation of Concerns**
+- UI separated from business logic
+- Isolated utility functions
+- Centralized configuration
 
-### 2. **Manutenibilità**
-- Ogni file ha uno scopo specifico
-- Facile individuare dove modificare il codice
-- Riduzione della complessità per file
+### 2. **Maintainability**
+- Each file has a specific purpose
+- Easy to identify where to modify code
+- Reduced complexity per file
 
-### 3. **Testabilità**
-- Moduli indipendenti facilmente testabili
-- Funzioni pure senza effetti collaterali
-- Mock semplificato per i test
+### 3. **Testability**
+- Independently testable modules
+- Pure functions without side effects
+- Simplified mocking for tests
 
-### 4. **Riusabilità**
-- Componenti UI riutilizzabili
-- Funzioni utilitarie generiche
-- Logica di business modulare
+### 4. **Reusability**
+- Reusable UI components
+- Generic utility functions
+- Modular business logic
 
-### 5. **Leggibilità**
-- Codice più organizzato e chiaro
-- Docstring complete per ogni funzione
-- Nomi descrittivi e struttura logica
+### 5. **Readability**
+- More organized and clear code
+- Complete docstrings for each function
+- Descriptive names and logical structure
 
-## 🔧 Come Modificare
+## 🔧 How to Modify
 
-### Aggiungere una nuova valuta
-Modifica `config.py`:
+### Add a new currency
+Modify `config.py`:
 ```python
-CURRENCIES = ["EUR", "USD", "GBP", "CHF", "JPY", "CAD"]  # Aggiungi qui
+CURRENCIES = ["EUR", "USD", "GBP", "CHF", "JPY", "CAD"]  # Add here
 ```
 
-### Modificare il calcolo P&L
-Modifica `core/portfolio_processor.py` nelle funzioni:
-- `_build_open_positions()` per posizioni aperte
-- `_build_sales_history()` per vendite
+### Modify P&L calculation
+Modify `core/portfolio_processor.py` in the functions:
+- `_build_open_positions()` for open positions
+- `_build_sales_history()` for sales
 
-### Aggiungere un nuovo componente UI
-1. Crea funzione in `ui/sidebar.py` o `ui/main_view.py`
-2. Chiamala da `app.py` nella funzione `main()`
+### Add a new UI component
+1. Create function in `ui/sidebar.py` or `ui/main_view.py`
+2. Call it from `app.py` in the `main()` function
 
-### Modificare la fonte dati dei prezzi
-Modifica `utils/price_fetcher.py`:
-- Sostituisci yfinance con altra API
-- Mantieni la stessa interfaccia della funzione
+### Modify price data source
+Modify `utils/price_fetcher.py`:
+- Replace yfinance with another API
+- Maintain the same function interface
 
-## 🚀 Esecuzione
+## 🚀 Execution
 
 ```bash
 streamlit run app.py
 ```
 
-L'applicazione si avvierà con la nuova struttura modulare, mantenendo tutte le funzionalità originali.
+The application will start with the new modular structure, maintaining all the original functionality.
