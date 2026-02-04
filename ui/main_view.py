@@ -81,13 +81,9 @@ def _render_sales_history(df_hist, target_currency):
     """Renders the sales history table with FOMO analysis."""
     st.subheader("Sales History & FOMO Analysis")
     if not df_hist.empty:
-        # Create a copy and rename column for display
-        df_display = df_hist.copy()
-        df_display.rename(columns={'Avg Price': 'Sell Price'}, inplace=True)
-        
-        # Select and order columns for sales history
-        display_cols = ['Date', 'Ticker', 'Qty', 'Sell Price', 'Current Price', 
-                       'Value Today', 'Realized_PL', 'FOMO', 'Currency']
+        # Select and order columns for sales history in the exact order requested
+        display_cols = ['Date', 'Ticker', 'Qty', 'Avg Buy Price', 'Sell Price', 'Value', 
+                       'Current Price', 'Value Today', 'Realized P&L', 'FOMO', 'Currency']
         
         # Function to color values
         def color_values(val):
@@ -96,14 +92,16 @@ def _render_sales_history(df_hist, target_currency):
             color = 'green' if val > 0 else 'red' if val < 0 else 'gray'
             return f'color: {color}'
         
-        styled_hist = df_display[display_cols].sort_values(by='Date', ascending=False).style.format({
+        styled_hist = df_hist[display_cols].sort_values(by='Date', ascending=False).style.format({
             "Qty": "{:.2f}",
+            "Avg Buy Price": "{:.2f}",
             "Sell Price": "{:.2f}",
+            "Value": "{:.2f}",
             "Current Price": "{:.2f}",
             "Value Today": "{:.2f}",
-            "Realized_PL": "{:.2f}",
+            "Realized P&L": "{:.2f}",
             "FOMO": "{:.2f}"
-        }).applymap(color_values, subset=['Realized_PL', 'FOMO'])
+        }).applymap(color_values, subset=['Realized P&L', 'FOMO'])
         
         st.dataframe(styled_hist, use_container_width=True, hide_index=True)
         

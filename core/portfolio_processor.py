@@ -93,11 +93,11 @@ def process_portfolio(df, target_currency, refresh_key=0):
                 'Date': date_tx,
                 'Ticker': t,
                 'Qty': qty,
-                'Avg Price': price_orig,
-                'Cost_Basis': pmc_at_sale,  # Average cost at time of sale
+                'Avg Buy Price': pmc_at_sale / rate,  # Average buy price in original currency
+                'Sell Price': price_orig,
+                'Value': price_orig * qty,  # Sell Price * Qty in original currency
                 'Proceeds': proceeds,  # Proceeds in base currency
-                'Proceeds_Orig': price_orig * qty,  # Proceeds in original currency
-                'Realized_PL': realized_pl,
+                'Realized P&L': realized_pl,
                 'Currency': curr_orig
             })
             
