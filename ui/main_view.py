@@ -114,8 +114,10 @@ def _render_sales_history(df_hist, target_currency):
 
 def _render_fomo_stats(df_hist, target_currency):
     """Renders FOMO statistics."""
-    total_fomo = df_hist['FOMO'].sum()
-    avg_fomo = df_hist['FOMO'].mean()
+    # Use the converted FOMO column for totals (in target currency)
+    # IMPORTANTE: Non sommare valori FOMO in valute diverse!
+    total_fomo = df_hist['_FOMO Conv'].sum()
+    avg_fomo = df_hist['_FOMO Conv'].mean()
     
     st.divider()
     col_f1, col_f2 = st.columns(2)

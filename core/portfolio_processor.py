@@ -207,9 +207,10 @@ def process_portfolio(df, target_currency, refresh_key=0):
         rates_live_cache, target_currency
     )
     
-    # Calculate totals
-    total_value = df_open['Current Value'].sum() if not df_open.empty else 0.0
-    total_unrealized_pl = df_open['Unrealized P&L'].sum() if not df_open.empty else 0.0
+    # Calculate totals using CONVERTED values (in target currency)
+    # IMPORTANTE: Non sommare valori in valute diverse!
+    total_value = df_open['_Current Value Conv'].sum() if not df_open.empty else 0.0
+    total_unrealized_pl = df_open['_Unrealized P&L Conv'].sum() if not df_open.empty else 0.0
 
     return df_open, df_closed, total_value, total_realized_pl, total_unrealized_pl
 
@@ -255,6 +256,10 @@ def _build_open_positions(active_tickers, holdings, current_prices,
         unrealized_pl_orig = (live_price_orig - pmc_orig) * qty
         pl_percent = ((live_price_orig - pmc_orig) / pmc_orig * 100) if pmc_orig > 0 else 0
         
+        # Calculate values in TARGET currency for totals only (hidden columns)
+        market_value_conv = qty * live_price_conv
+        unrealized_pl_conv = (live_price_conv - pmc_conv) * qty
+        
         open_positions.append({
             'Ticker': t,
             'Qty': qty,
@@ -264,7 +269,10 @@ def _build_open_positions(active_tickers, holdings, current_prices,
             'Current Value': round(market_value_orig, 2),
             'Unrealized P&L': round(unrealized_pl_orig, 2),
             'Unrealized P&L %': round(pl_percent, 2),
-            'Currency': curr_t
+            'Currency': curr_t,
+            # Hidden columns for total calculations only (in target currency)
+            '_Current Value Conv': round(market_value_conv, 2),
+            '_Unrealized P&L Conv': round(unrealized_pl_conv, 2)
         })
         
     return pd.DataFrame(open_positions)
@@ -288,31 +296,38 @@ def _build_sales_history(closed_positions, current_prices,
         t = pos['Ticker']
         qty = pos['Qty']
         curr_t = pos['Currency']
-        proceeds_base = pos['Proceeds']
+        proceeds_base = pos['Proceeds']  # Already in target currency
         
-        # Live price
+        # Live price in original currency
         live_price_orig = current_prices.get(t, 0.0)
         
-        # Conversion for FOMO
+        # Conversion rate for FOMO calculation
         if curr_t == target_currency:
             rate_live = 1.0
         else:
             rs = rates_live_cache.get(curr_t)
             rate_live = rs.iloc[-1] if rs is not None and not rs.empty else 1.0
         
-        # Value today in base currency
+        # Value today in TARGET currency (for FOMO calculation in target currency)
         value_today_conv = live_price_orig * rate_live * qty
         
-        # Value today in original currency
+        # Value today in ORIGINAL currency (for display)
         value_today_orig = live_price_orig * qty
         
-        # FOMO: difference between proceeds and today's value (in base currency)
+        # FOMO in TARGET currency (for totals)
         # Positive FOMO = good sale (sold higher than current price)
         # Negative FOMO = missed opportunity (current price higher than sale price)
-        fomo = proceeds_base - value_today_conv
+        fomo_conv = proceeds_base - value_today_conv
+        
+        # FOMO in ORIGINAL currency (for display in table - for consistency with other columns)
+        sell_price_orig = pos['Sell Price']
+        sell_value_orig = sell_price_orig * qty
+        fomo_orig = sell_value_orig - value_today_orig
         
         pos['Current Price'] = round(live_price_orig, 2)
         pos['Value Today'] = round(value_today_orig, 2)
-        pos['FOMO'] = round(fomo, 2)
+        pos['FOMO'] = round(fomo_orig, 2)  # FOMO in original currency for display
+        # Hidden column for total FOMO calculation (in target currency)
+        pos['_FOMO Conv'] = round(fomo_conv, 2)
 
     return pd.DataFrame(closed_positions)
