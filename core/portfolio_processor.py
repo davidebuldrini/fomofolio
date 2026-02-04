@@ -306,8 +306,10 @@ def _build_sales_history(closed_positions, current_prices,
         # Value today in original currency
         value_today_orig = live_price_orig * qty
         
-        # FOMO: difference between today's value and original proceeds (in base currency)
-        fomo = value_today_conv - proceeds_base
+        # FOMO: difference between proceeds and today's value (in base currency)
+        # Positive FOMO = good sale (sold higher than current price)
+        # Negative FOMO = missed opportunity (current price higher than sale price)
+        fomo = proceeds_base - value_today_conv
         
         pos['Current Price'] = round(live_price_orig, 2)
         pos['Value Today'] = round(value_today_orig, 2)
