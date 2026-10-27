@@ -1,25 +1,30 @@
 """
 Portfolio processing logic for calculating positions, P&L, and FOMO metrics.
 """
+import math
+
 import pandas as pd
 from utils.exchange_rates import get_exchange_rate_history, get_rate_at_date
 from utils.price_fetcher import get_current_prices
 
 
+_QTY_EPSILON = 1e-9
+
+
 def average_cost(shares, prices, commissions=0):
     """
     Calculate the average cost (cost basis) of a stock position.
-    
+
     Formula: (sum of (shares * price) + commissions) / total shares
-    
+
     Args:
         shares: list of number of shares bought
         prices: list of prices per share
         commissions: total commissions paid (optional)
-    
+
     Returns:
         float: Average cost per share
-    
+
     Example:
         shares = [100, 50]
         prices = [10, 12]
@@ -31,303 +36,437 @@ def average_cost(shares, prices, commissions=0):
     return total_cost / total_shares if total_shares > 0 else 0
 
 
+def _empty_holding():
+    return {
+        'qty': 0.0,
+        'total_cost_orig': 0.0,
+        'total_cost_conv': 0.0,
+        'pmc_orig': 0.0,
+        'pmc_conv': 0.0,
+        'currency': '',
+        # False when any buy could not be converted, so blended PMC in
+        # portfolio currency would be incomplete.
+        'fx_ok': True,
+    }
+
+
+def _is_missing(value):
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except TypeError:
+        pass
+    try:
+        return not math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return True
+
+
+def _sum_known(series):
+    """Sum finite values. Empty input is 0. All-missing input is NaN."""
+    if series is None or len(series) == 0:
+        return 0.0
+    known = pd.to_numeric(series, errors='coerce').dropna()
+    if known.empty:
+        return float('nan')
+    return float(known.sum())
+
+
+def _lookup_rate(curr_orig, target_currency, rates_cache, date_tx):
+    if curr_orig == target_currency:
+        return 1.0
+    rate_series = rates_cache.get(curr_orig)
+    return get_rate_at_date(rate_series, date_tx)
+
+
+def _live_rate(currency, target_currency, rates_live_cache):
+    if currency == target_currency:
+        return 1.0
+    series = rates_live_cache.get(currency)
+    if series is None or len(series) == 0:
+        return None
+    cleaned = series.dropna()
+    if cleaned.empty:
+        return None
+    rate = float(cleaned.iloc[-1])
+    if not math.isfinite(rate) or rate <= 0:
+        return None
+    return rate
+
+
 def process_portfolio(df, target_currency, refresh_key=0):
     """
     Calculates portfolio metrics, average cost, P&L, FOMO.
     Separates open positions from sales history.
-    
+
+    Buys are applied before sells on the same date. A sell larger than the
+    open quantity realizes P&L only on the shares actually held. Each ticker
+    keeps the currency of its first buy; later rows in another currency are
+    ignored. Missing prices and exchange rates stay unknown and are left out
+    of the totals.
+
     Args:
         df: DataFrame with transaction data
         target_currency: The base currency for portfolio calculations
-        refresh_key: Parameter to force price refresh
-    
+        refresh_key: Parameter to force price and FX refresh
+
     Returns:
-        tuple: (df_open, df_closed, total_value, total_realized_pl, total_unrealized_pl)
-            - df_open: DataFrame with open positions
-            - df_closed: DataFrame with sales history
-            - total_value: Total portfolio value
-            - total_realized_pl: Total realized profit/loss
-            - total_unrealized_pl: Total unrealized profit/loss
+        tuple: (df_open, df_closed, total_value, total_realized_pl,
+                total_unrealized_pl, warnings)
     """
     if df.empty:
-        return pd.DataFrame(), pd.DataFrame(), 0.0, 0.0, 0.0
+        return pd.DataFrame(), pd.DataFrame(), 0.0, 0.0, 0.0, []
 
-    df = df.sort_values(by='Date')
-    
-    # holdings structure:
-    # {ticker: {
-    #   'qty': total shares,
-    #   'total_cost_orig': sum of (shares * price) in ORIGINAL currency,
-    #   'total_cost_conv': sum of (shares * price) in TARGET currency (for P&L),
-    #   'pmc_orig': avg price in ORIGINAL currency,
-    #   'pmc_conv': avg price in TARGET currency (for P&L),
-    #   'currency': original currency
-    # }}
+    df = df.copy()
+    df['_sort_type'] = (
+        df['Type'].astype(str).str.strip().str.upper()
+        .map({'BUY': 0, 'SELL': 1})
+        .fillna(2)
+    )
+    # mergesort is stable, so two buys on the same day keep their entry order.
+    df = df.sort_values(by=['Date', '_sort_type'], kind='mergesort')
+
     holdings = {}
-    closed_positions = []  # List for sales history
-    
-    # Pre-fetch exchange rates for currencies involved
-    currencies_in_use = df['Currency'].unique()
+    closed_positions = []
+    warnings = []
+
+    currencies_in_use = df['Currency'].dropna().astype(str).str.strip().str.upper().unique()
     rates_cache = {}
     for curr in currencies_in_use:
         if curr != target_currency:
-            rates_cache[curr] = get_exchange_rate_history(curr, target_currency)
-    
-    total_realized_pl = 0.0
-    
-    # Process all transactions
-    for index, row in df.iterrows():
-        t = row['Ticker']
-        qty = row['Qty']
-        price_orig = row['Price']
-        curr_orig = row['Currency']
-        date_tx = row['Date']  # datetime.date
-        
-        # Setup holdings if new
-        if t not in holdings:
-            holdings[t] = {
-                'qty': 0,
-                'total_cost_orig': 0.0,  # Total cost in original currency
-                'total_cost_conv': 0.0,  # Total cost in target currency (for P&L)
-                'pmc_orig': 0.0,         # Avg price in original currency
-                'pmc_conv': 0.0,         # Avg price in target currency (for P&L)
-                'currency': ''
-            }
-            
-        # Get Exchange Rate
-        if curr_orig == target_currency:
-            rate = 1.0
-        else:
-            rate_series = rates_cache.get(curr_orig)
-            rate = get_rate_at_date(rate_series, date_tx)
-            
-        price_conv = price_orig * rate
-        
-        if row['Type'] == 'BUY':
-            # Update weighted average cost (Prezzo Medio di Carico - PMC)
-            # Formula: Avg Buy Price = sum(shares_i * price_i) / sum(shares_i)
-            # IMPORTANTE: Il calcolo viene fatto nella VALUTA ORIGINALE
-            # Example: 
-            #   Buy 100 @ $10 = $1000
-            #   Buy 50 @ $12 = $600
-            #   Avg = ($1000 + $600) / (100 + 50) = $1600 / 150 = $10.67
-            
-            prev_qty = holdings[t]['qty']
-            prev_cost_orig = holdings[t]['total_cost_orig']  # In original currency
-            prev_cost_conv = holdings[t]['total_cost_conv']  # In target currency
-            
-            # Cost of this purchase in both currencies
-            add_cost_orig = qty * price_orig  # ORIGINAL currency
-            add_cost_conv = qty * price_conv  # CONVERTED currency
-            
-            # Update total shares and total costs
-            new_qty = prev_qty + qty
-            new_total_cost_orig = prev_cost_orig + add_cost_orig
-            new_total_cost_conv = prev_cost_conv + add_cost_conv
-            
-            holdings[t]['qty'] = new_qty
-            holdings[t]['total_cost_orig'] = new_total_cost_orig
-            holdings[t]['total_cost_conv'] = new_total_cost_conv
-            holdings[t]['currency'] = curr_orig
-            
-            # Calculate new average prices: total_cost / total_shares
-            if new_qty > 0:
-                holdings[t]['pmc_orig'] = new_total_cost_orig / new_qty  # ORIGINAL currency
-                holdings[t]['pmc_conv'] = new_total_cost_conv / new_qty  # CONVERTED currency
-            
-        elif row['Type'] == 'SELL':
-            # Calculate Realized P&L using the average cost in target currency
-            pmc_orig_at_sale = holdings[t]['pmc_orig']  # Avg price in original currency
-            pmc_conv_at_sale = holdings[t]['pmc_conv']  # Avg price in target currency (for P&L)
-            
-            proceeds = qty * price_conv  # Proceeds in target currency
-            cost_basis = qty * pmc_conv_at_sale  # Cost basis in target currency
-            
-            realized_pl = proceeds - cost_basis
-            total_realized_pl += realized_pl
-            
-            # Record the sale in history
+            rates_cache[curr] = get_exchange_rate_history(
+                curr, target_currency, period="max", refresh_key=refresh_key
+            )
+
+    realized_amounts = []
+    realized_incomplete = False
+
+    for _, row in df.iterrows():
+        tx_type = str(row['Type']).strip().upper()
+        ticker = str(row['Ticker']).strip().upper()
+        if not ticker or ticker == 'NAN':
+            warnings.append("A transaction without a ticker was ignored.")
+            continue
+        if tx_type not in ('BUY', 'SELL'):
+            warnings.append(
+                f"{ticker} on {row['Date']}: type '{row['Type']}' was ignored. Use BUY or SELL."
+            )
+            continue
+
+        try:
+            qty = float(row['Qty'])
+            price_orig = float(row['Price'])
+        except (TypeError, ValueError):
+            warnings.append(f"{ticker} on {row['Date']}: quantity or price is not a number. Row ignored.")
+            continue
+        if qty <= 0 or price_orig <= 0 or not math.isfinite(qty) or not math.isfinite(price_orig):
+            warnings.append(f"{ticker} on {row['Date']}: quantity and price must be positive. Row ignored.")
+            continue
+
+        curr_orig = str(row['Currency']).strip().upper()
+        date_tx = row['Date']
+
+        if ticker not in holdings:
+            holdings[ticker] = _empty_holding()
+
+        position = holdings[ticker]
+        rate = _lookup_rate(curr_orig, target_currency, rates_cache, date_tx)
+
+        if tx_type == 'BUY':
+            if position['currency'] and curr_orig != position['currency']:
+                warnings.append(
+                    f"BUY {ticker} on {date_tx} in {curr_orig} was ignored. "
+                    f"This ticker is already tracked in {position['currency']}."
+                )
+                continue
+
+            position['currency'] = curr_orig
+            add_cost_orig = qty * price_orig
+            position['qty'] += qty
+            position['total_cost_orig'] += add_cost_orig
+
+            if _is_missing(rate):
+                position['fx_ok'] = False
+                warnings.append(
+                    f"No exchange rate for {curr_orig} to {target_currency} on {date_tx} ({ticker}). "
+                    "That buy is excluded from portfolio-currency P&L."
+                )
+            elif position['fx_ok']:
+                position['total_cost_conv'] += qty * price_orig * rate
+
+            if position['qty'] > 0:
+                position['pmc_orig'] = position['total_cost_orig'] / position['qty']
+                if position['fx_ok']:
+                    position['pmc_conv'] = position['total_cost_conv'] / position['qty']
+
+        elif tx_type == 'SELL':
+            if position['currency'] and curr_orig != position['currency']:
+                warnings.append(
+                    f"SELL {ticker} on {date_tx} in {curr_orig} was ignored. "
+                    f"This ticker is tracked in {position['currency']}."
+                )
+                continue
+
+            available = position['qty']
+            if available <= _QTY_EPSILON:
+                warnings.append(
+                    f"SELL {ticker} on {date_tx} for {qty:g} shares was ignored because there was no open position."
+                )
+                continue
+
+            if qty > available + _QTY_EPSILON:
+                excess = qty - available
+                warnings.append(
+                    f"SELL {ticker} on {date_tx} for {qty:g} shares exceeds the {available:g} shares held. "
+                    f"The extra {excess:g} shares were excluded from P&L."
+                )
+                qty = available
+
+            pmc_orig_at_sale = position['pmc_orig']
+            pmc_conv_at_sale = position['pmc_conv']
+            sell_converted = position['fx_ok'] and not _is_missing(rate)
+
+            if not sell_converted:
+                realized_pl = float('nan')
+                proceeds = float('nan')
+                realized_incomplete = True
+                if _is_missing(rate):
+                    warnings.append(
+                        f"No exchange rate for {curr_orig} to {target_currency} on {date_tx} ({ticker}). "
+                        "That sale is excluded from realized P&L."
+                    )
+                elif not position['fx_ok']:
+                    warnings.append(
+                        f"Realized P&L for {ticker} on {date_tx} is excluded because an earlier "
+                        "exchange rate was missing."
+                    )
+            else:
+                proceeds = qty * price_orig * rate
+                cost_basis = qty * pmc_conv_at_sale
+                realized_pl = proceeds - cost_basis
+                realized_amounts.append(realized_pl)
+
             closed_positions.append({
                 'Date': date_tx,
-                'Ticker': t,
+                'Ticker': ticker,
                 'Qty': qty,
-                'Avg Buy Price': pmc_orig_at_sale,  # Average buy price in ORIGINAL currency
+                'Avg Buy Price': pmc_orig_at_sale,
                 'Sell Price': price_orig,
-                'Value': price_orig * qty,  # Sell Price * Qty in original currency
-                'Proceeds': proceeds,  # Proceeds in base currency
+                'Value': price_orig * qty,
+                'Proceeds': proceeds,
                 'Realized P&L': realized_pl,
-                'Currency': curr_orig
+                'Currency': position['currency'] or curr_orig,
             })
-            
-            # Update holding (reduce quantity and both total costs proportionally)
-            holdings[t]['qty'] -= qty
-            holdings[t]['total_cost_orig'] -= qty * pmc_orig_at_sale
-            holdings[t]['total_cost_conv'] -= cost_basis
-            
-            # If qty goes to 0, reset everything
-            if holdings[t]['qty'] <= 1e-9:
-                holdings[t]['qty'] = 0
-                holdings[t]['total_cost_orig'] = 0.0
-                holdings[t]['total_cost_conv'] = 0.0
-                holdings[t]['pmc_orig'] = 0.0
-                holdings[t]['pmc_conv'] = 0.0
 
-    # --- Live Data ---
-    active_tickers = [t for t, data in holdings.items() if data['qty'] > 0]
-    sold_tickers = list(set([pos['Ticker'] for pos in closed_positions]))
-    all_tickers_needed = list(set(active_tickers + sold_tickers))
-    
-    current_prices = get_current_prices(all_tickers_needed, _refresh_key=refresh_key)
-    
-    # Prepare exchange rates for live prices
+            position['qty'] -= qty
+            position['total_cost_orig'] -= qty * pmc_orig_at_sale
+            if position['fx_ok']:
+                position['total_cost_conv'] -= qty * pmc_conv_at_sale
+
+            if position['qty'] <= _QTY_EPSILON:
+                currency = position['currency']
+                position.update(_empty_holding())
+                # Keep the listing currency so a later buy in another currency is still rejected.
+                # A new lot after a flat position starts its converted cost from scratch.
+                position['currency'] = currency
+
+    if realized_amounts:
+        total_realized_pl = float(sum(realized_amounts))
+    elif realized_incomplete:
+        total_realized_pl = float('nan')
+    else:
+        total_realized_pl = 0.0
+
+    active_tickers = [t for t, data in holdings.items() if data['qty'] > _QTY_EPSILON]
+    sold_tickers = list({pos['Ticker'] for pos in closed_positions})
+    all_tickers_needed = sorted(set(active_tickers + sold_tickers))
+
+    current_prices = get_current_prices(all_tickers_needed, refresh_key=refresh_key)
+
     ticker_currencies = {}
     for t, data in holdings.items():
         if data.get('currency'):
             ticker_currencies[t] = data['currency']
-    
-    # Add currencies from sold tickers
     for pos in closed_positions:
-        if pos['Ticker'] not in ticker_currencies:
-            ticker_currencies[pos['Ticker']] = pos['Currency']
-        
+        ticker_currencies.setdefault(pos['Ticker'], pos['Currency'])
+
     rates_live_cache = {}
     for curr in set(ticker_currencies.values()):
         if curr != target_currency:
-            rates_live_cache[curr] = get_exchange_rate_history(curr, target_currency, period="5d")
-            
-    # --- Build Open Positions Table ---
+            rates_live_cache[curr] = get_exchange_rate_history(
+                curr, target_currency, period="5d", refresh_key=refresh_key
+            )
+
     df_open = _build_open_positions(
-        active_tickers, holdings, current_prices, 
-        ticker_currencies, rates_live_cache, target_currency
+        active_tickers, holdings, current_prices,
+        rates_live_cache, target_currency, warnings
     )
-    
-    # --- Build Sales History Table ---
     df_closed = _build_sales_history(
-        closed_positions, current_prices, 
-        rates_live_cache, target_currency
+        closed_positions, current_prices,
+        rates_live_cache, target_currency, warnings
     )
-    
-    # Calculate totals using CONVERTED values (in target currency)
-    # IMPORTANTE: Non sommare valori in valute diverse!
-    total_value = df_open['_Current Value Conv'].sum() if not df_open.empty else 0.0
-    total_unrealized_pl = df_open['_Unrealized P&L Conv'].sum() if not df_open.empty else 0.0
 
-    return df_open, df_closed, total_value, total_realized_pl, total_unrealized_pl
+    total_value = _sum_known(df_open['_Current Value Conv']) if not df_open.empty else 0.0
+    total_unrealized_pl = _sum_known(df_open['_Unrealized P&L Conv']) if not df_open.empty else 0.0
+
+    return df_open, df_closed, total_value, total_realized_pl, total_unrealized_pl, _unique_warnings(warnings)
 
 
-def _build_open_positions(active_tickers, holdings, current_prices, 
-                          ticker_currencies, rates_live_cache, target_currency):
+def _unique_warnings(warnings):
+    seen = set()
+    unique = []
+    for message in warnings:
+        if message not in seen:
+            seen.add(message)
+            unique.append(message)
+    return unique
+
+
+def _build_open_positions(active_tickers, holdings, current_prices,
+                          rates_live_cache, target_currency, warnings):
     """
     Build DataFrame for open positions.
-    
-    Args:
-        active_tickers: List of tickers with open positions
-        holdings: Dictionary of holdings data
-        current_prices: Dictionary of current prices
-        ticker_currencies: Dictionary mapping tickers to currencies
-        rates_live_cache: Cache of live exchange rates
-        target_currency: Base currency for calculations
-    
-    Returns:
-        pandas.DataFrame: Open positions with P&L calculations
+
+    Display amounts stay in the instrument currency. Columns prefixed with
+    '_' are full-precision values in the portfolio currency and are only
+    used for totals.
     """
     open_positions = []
-    
+    missing_prices = []
+    missing_fx = []
+
     for t in active_tickers:
         qty = holdings[t]['qty']
-        pmc_orig = holdings[t]['pmc_orig']  # Avg price in ORIGINAL currency
-        pmc_conv = holdings[t]['pmc_conv']  # Avg price in TARGET currency
+        pmc_orig = holdings[t]['pmc_orig']
+        pmc_conv = holdings[t]['pmc_conv']
         curr_t = holdings[t]['currency']
-        
-        # Live price in original currency
-        live_price_orig = current_prices.get(t, 0.0)
-        
-        # Conversion for totals
-        if curr_t == target_currency:
-            rate_live = 1.0
+        fx_ok = holdings[t]['fx_ok']
+
+        live_price_orig = current_prices.get(t)
+        if _is_missing(live_price_orig):
+            live_price_orig = None
+            missing_prices.append(t)
+
+        rate_live = _live_rate(curr_t, target_currency, rates_live_cache)
+        if not fx_ok or _is_missing(rate_live):
+            rate_live = None
+            if curr_t and curr_t != target_currency:
+                missing_fx.append(f"{t} ({curr_t})")
+            elif not fx_ok:
+                missing_fx.append(t)
+
+        if live_price_orig is None:
+            market_value_orig = float('nan')
+            unrealized_pl_orig = float('nan')
+            pl_percent = float('nan')
+            current_price = float('nan')
         else:
-            rs = rates_live_cache.get(curr_t)
-            rate_live = rs.iloc[-1] if rs is not None and not rs.empty else 1.0
-             
-        live_price_conv = live_price_orig * rate_live
-        
-        # Calculate P&L in original currency for display
-        market_value_orig = qty * live_price_orig
-        unrealized_pl_orig = (live_price_orig - pmc_orig) * qty
-        pl_percent = ((live_price_orig - pmc_orig) / pmc_orig * 100) if pmc_orig > 0 else 0
-        
-        # Calculate values in TARGET currency for totals only (hidden columns)
-        market_value_conv = qty * live_price_conv
-        unrealized_pl_conv = (live_price_conv - pmc_conv) * qty
-        
+            current_price = live_price_orig
+            market_value_orig = qty * live_price_orig
+            unrealized_pl_orig = (live_price_orig - pmc_orig) * qty
+            pl_percent = (
+                (live_price_orig - pmc_orig) / pmc_orig * 100
+                if pmc_orig > 0 else float('nan')
+            )
+
+        if live_price_orig is None or rate_live is None:
+            market_value_conv = float('nan')
+            unrealized_pl_conv = float('nan')
+        else:
+            live_price_conv = live_price_orig * rate_live
+            market_value_conv = qty * live_price_conv
+            unrealized_pl_conv = (live_price_conv - pmc_conv) * qty
+
         open_positions.append({
             'Ticker': t,
             'Qty': qty,
-            'Avg Price': round(pmc_orig, 2),  # Already in original currency
-            'Current Price': round(live_price_orig, 2),
-            'Initial Value': round(pmc_orig * qty, 2),
-            'Current Value': round(market_value_orig, 2),
-            'Unrealized P&L': round(unrealized_pl_orig, 2),
-            'Unrealized P&L %': round(pl_percent, 2),
+            'Avg Price': pmc_orig,
+            'Current Price': current_price,
+            'Initial Value': pmc_orig * qty,
+            'Current Value': market_value_orig,
+            'Unrealized P&L': unrealized_pl_orig,
+            'Unrealized P&L %': pl_percent,
             'Currency': curr_t,
-            # Hidden columns for total calculations only (in target currency)
-            '_Current Value Conv': round(market_value_conv, 2),
-            '_Unrealized P&L Conv': round(unrealized_pl_conv, 2)
+            '_Current Value Conv': market_value_conv,
+            '_Unrealized P&L Conv': unrealized_pl_conv,
         })
-        
+
+    if missing_prices:
+        names = ", ".join(missing_prices)
+        warnings.append(
+            f"Current price unavailable for {names}. "
+            "Those positions are excluded from portfolio totals."
+        )
+    if missing_fx:
+        names = ", ".join(dict.fromkeys(missing_fx))
+        warnings.append(
+            f"Portfolio-currency value unavailable for {names}. "
+            "Those positions are excluded from portfolio totals."
+        )
+
     return pd.DataFrame(open_positions)
 
 
-def _build_sales_history(closed_positions, current_prices, 
-                         rates_live_cache, target_currency):
+def _build_sales_history(closed_positions, current_prices,
+                         rates_live_cache, target_currency, warnings):
     """
     Build DataFrame for sales history with FOMO analysis.
-    
-    Args:
-        closed_positions: List of closed position data
-        current_prices: Dictionary of current prices
-        rates_live_cache: Cache of live exchange rates
-        target_currency: Base currency for calculations
-    
-    Returns:
-        pandas.DataFrame: Sales history with FOMO calculations
+
+    FOMO in the table is in the instrument currency (sale proceeds minus
+    today's value). `_FOMO Conv` is the same difference in portfolio currency.
+    Positive FOMO means the sale beat today's price.
     """
+    missing_prices = []
+    missing_fx = []
+
     for pos in closed_positions:
         t = pos['Ticker']
         qty = pos['Qty']
         curr_t = pos['Currency']
-        proceeds_base = pos['Proceeds']  # Already in target currency
-        
-        # Live price in original currency
-        live_price_orig = current_prices.get(t, 0.0)
-        
-        # Conversion rate for FOMO calculation
-        if curr_t == target_currency:
-            rate_live = 1.0
-        else:
-            rs = rates_live_cache.get(curr_t)
-            rate_live = rs.iloc[-1] if rs is not None and not rs.empty else 1.0
-        
-        # Value today in TARGET currency (for FOMO calculation in target currency)
-        value_today_conv = live_price_orig * rate_live * qty
-        
-        # Value today in ORIGINAL currency (for display)
+        proceeds_base = pos['Proceeds']
+
+        live_price_orig = current_prices.get(t)
+        if _is_missing(live_price_orig):
+            live_price_orig = None
+            missing_prices.append(t)
+
+        rate_live = _live_rate(curr_t, target_currency, rates_live_cache)
+        if _is_missing(rate_live):
+            rate_live = None
+            if curr_t and curr_t != target_currency:
+                missing_fx.append(f"{t} ({curr_t})")
+
+        if live_price_orig is None:
+            pos['Current Price'] = float('nan')
+            pos['Value Today'] = float('nan')
+            pos['FOMO'] = float('nan')
+            pos['_FOMO Conv'] = float('nan')
+            continue
+
         value_today_orig = live_price_orig * qty
-        
-        # FOMO in TARGET currency (for totals)
-        # Positive FOMO = good sale (sold higher than current price)
-        # Negative FOMO = missed opportunity (current price higher than sale price)
-        fomo_conv = proceeds_base - value_today_conv
-        
-        # FOMO in ORIGINAL currency (for display in table - for consistency with other columns)
-        sell_price_orig = pos['Sell Price']
-        sell_value_orig = sell_price_orig * qty
-        fomo_orig = sell_value_orig - value_today_orig
-        
-        pos['Current Price'] = round(live_price_orig, 2)
-        pos['Value Today'] = round(value_today_orig, 2)
-        pos['FOMO'] = round(fomo_orig, 2)  # FOMO in original currency for display
-        # Hidden column for total FOMO calculation (in target currency)
-        pos['_FOMO Conv'] = round(fomo_conv, 2)
+        pos['Current Price'] = live_price_orig
+        pos['Value Today'] = value_today_orig
+        pos['FOMO'] = (pos['Sell Price'] * qty) - value_today_orig
+
+        if rate_live is None or _is_missing(proceeds_base):
+            pos['_FOMO Conv'] = float('nan')
+        else:
+            value_today_conv = live_price_orig * rate_live * qty
+            pos['_FOMO Conv'] = proceeds_base - value_today_conv
+
+    if missing_prices:
+        names = ", ".join(dict.fromkeys(missing_prices))
+        warnings.append(
+            f"Current price unavailable for sold ticker {names}. "
+            "FOMO for those sales is excluded from the totals."
+        )
+    if missing_fx:
+        names = ", ".join(dict.fromkeys(missing_fx))
+        warnings.append(
+            f"Exchange rate unavailable for {names}. "
+            "FOMO totals exclude those sales."
+        )
 
     return pd.DataFrame(closed_positions)

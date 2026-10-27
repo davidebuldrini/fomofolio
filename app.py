@@ -43,13 +43,15 @@ def main():
         ).dt.date
         
         with st.spinner('Processing data and exchange rates...'):
-            df_pos, df_hist, val_tot, pl_real, pl_unreal = process_portfolio(
+            df_pos, df_hist, val_tot, pl_real, pl_unreal, warnings = process_portfolio(
                 st.session_state.df_tx, 
                 target_currency, 
                 refresh_key=st.session_state.refresh_key
             )
         
-        render_main_view(df_pos, df_hist, val_tot, pl_real, pl_unreal, target_currency)
+        render_main_view(
+            df_pos, df_hist, val_tot, pl_real, pl_unreal, target_currency, warnings
+        )
     else:
         render_empty_state()
 
