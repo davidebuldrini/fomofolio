@@ -11,31 +11,6 @@ from utils.price_fetcher import get_current_prices
 _QTY_EPSILON = 1e-9
 
 
-def average_cost(shares, prices, commissions=0):
-    """
-    Calculate the average cost (cost basis) of a stock position.
-
-    Formula: (sum of (shares * price) + commissions) / total shares
-
-    Args:
-        shares: list of number of shares bought
-        prices: list of prices per share
-        commissions: total commissions paid (optional)
-
-    Returns:
-        float: Average cost per share
-
-    Example:
-        shares = [100, 50]
-        prices = [10, 12]
-        avg_cost = average_cost(shares, prices)
-        # Returns: 10.67 = ((100*10) + (50*12)) / 150
-    """
-    total_cost = sum(s * p for s, p in zip(shares, prices)) + commissions
-    total_shares = sum(shares)
-    return total_cost / total_shares if total_shares > 0 else 0
-
-
 def _empty_holding():
     return {
         'qty': 0.0,

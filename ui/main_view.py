@@ -137,7 +137,7 @@ def _render_open_positions(df_pos, target_currency):
         "Unrealized P&L %": "{:.2f}",
     }, na_rep="—").map(_color_pl, subset=['Unrealized P&L', 'Unrealized P&L %'])
 
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    st.dataframe(styled_df, width="stretch", hide_index=True)
     st.caption(
         "Prices and P&L in this table are in the instrument currency. "
         f"The totals above are in {target_currency}."
@@ -173,7 +173,7 @@ def _render_sales_history(df_hist, target_currency):
         "FOMO": "{:.2f}",
     }, na_rep="—").map(_color_pl, subset=[realized_label, 'FOMO'])
 
-    st.dataframe(styled_hist, use_container_width=True, hide_index=True)
+    st.dataframe(styled_hist, width="stretch", hide_index=True)
     st.caption(
         f"{realized_label} is in the portfolio currency. "
         "Prices, trade value, and FOMO in the table are in the instrument currency. "
