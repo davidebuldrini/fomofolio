@@ -1,29 +1,43 @@
 """
 Price fetching functions for stock data.
 """
+import logging
 import math
 
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from config import PRICE_CACHE_TTL
+from config import (
+    CACHE_MAX_ENTRIES,
+    MINOR_UNIT_CURRENCIES,
+    PRICE_CACHE_TTL,
+    QUOTE_CURRENCY_CACHE_TTL,
+)
+
+logger = logging.getLogger(__name__)
 
 
-def _quote_to_major_units(ticker, price):
+def to_major_units(price, quote_currency):
     """
-    Yahoo quotes London listings (.L) in pence. The portfolio records GBP in pounds.
+    Convert a raw Yahoo quote to the major currency unit.
+
+    Returns:
+        tuple: (price or None, major currency code or None)
     """
     if price is None or pd.isna(price):
-        return None
+        return None, None
     try:
         value = float(price)
     except (TypeError, ValueError):
-        return None
+        return None, None
     if not math.isfinite(value) or value <= 0:
-        return None
-    if str(ticker).upper().endswith('.L'):
-        value = value / 100.0
-    return value
+        return None, None
+    if not quote_currency:
+        return value, None
+    if quote_currency in MINOR_UNIT_CURRENCIES:
+        major, divisor = MINOR_UNIT_CURRENCIES[quote_currency]
+        return value / divisor, major
+    return value, str(quote_currency).upper()
 
 
 def _last_close(series):
@@ -64,41 +78,70 @@ def _extract_close(data, ticker, single):
     return None
 
 
-@st.cache_data(ttl=PRICE_CACHE_TTL)
-def get_current_prices(tickers, refresh_key=0):
+@st.cache_data(ttl=QUOTE_CURRENCY_CACHE_TTL, max_entries=CACHE_MAX_ENTRIES)
+def get_quote_currency(ticker):
     """
-    Downloads current prices for a list of tickers.
-    Uses a 5-day period to avoid weekend/holiday issues.
+    The currency Yahoo uses to quote `ticker`, as reported (e.g. 'USD', 'GBp').
 
-    Missing quotes are omitted. Callers must treat a missing ticker as
-    unavailable, not as a price of zero.
-
-    Args:
-        tickers: List of ticker symbols
-        refresh_key: Change this to bypass the cache
-
-    Returns:
-        dict: Ticker symbols mapped to the latest price, in major currency units
+    Returns None when Yahoo does not report it.
     """
-    del refresh_key  # Part of the cache key; not used in the function body.
-
-    if not tickers:
-        return {}
-
     try:
-        data = yf.download(tickers, period="5d", group_by='ticker', progress=False)
-    except Exception as e:
-        print(f"Error downloading prices: {e}")
+        currency = yf.Ticker(ticker).fast_info['currency']
+    except Exception:
+        logger.warning("Could not read the quote currency of %s", ticker, exc_info=True)
+        return None
+    return str(currency) if currency else None
+
+
+@st.cache_data(ttl=PRICE_CACHE_TTL, max_entries=CACHE_MAX_ENTRIES)
+def _download_last_closes(tickers, refresh_key=0):
+    del refresh_key  # Part of the cache key; not used in the function body.
+    try:
+        data = yf.download(list(tickers), period="5d", group_by='ticker', progress=False)
+    except Exception:
+        logger.warning("Price download failed for %s", ", ".join(tickers), exc_info=True)
         return {}
 
-    prices = {}
+    closes = {}
     single = len(tickers) == 1
     for ticker in tickers:
         try:
             raw = _extract_close(data, ticker, single)
         except Exception:
             raw = None
-        normalized = _quote_to_major_units(ticker, raw)
-        if normalized is not None:
-            prices[ticker] = normalized
-    return prices
+        if raw is not None and not pd.isna(raw):
+            closes[ticker] = float(raw)
+    return closes
+
+
+def get_current_prices(tickers, refresh_key=0):
+    """
+    Latest price for each ticker, in the major unit of its listing currency.
+
+    Uses a 5-day window to cover weekends and holidays. Missing quotes are
+    omitted: callers must treat a missing ticker as unavailable, not zero.
+
+    Args:
+        tickers: List of ticker symbols
+        refresh_key: Change this to bypass the price cache
+
+    Returns:
+        dict: ticker -> {'price': float, 'currency': str or None}
+            `currency` is the major currency code (pence quotes become GBP),
+            or None when Yahoo does not report it.
+    """
+    tickers = tuple(sorted(set(tickers)))
+    if not tickers:
+        return {}
+
+    closes = _download_last_closes(tickers, refresh_key=refresh_key)
+    quotes = {}
+    for ticker, raw in closes.items():
+        quote_currency = get_quote_currency(ticker)
+        if quote_currency is None and ticker.upper().endswith('.L'):
+            # Most London listings are quoted in pence; assume so when Yahoo is silent.
+            quote_currency = 'GBp'
+        price, currency = to_major_units(raw, quote_currency)
+        if price is not None:
+            quotes[ticker] = {'price': price, 'currency': currency}
+    return quotes

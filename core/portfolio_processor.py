@@ -1,14 +1,54 @@
 """
 Portfolio processing logic for calculating positions, P&L, and FOMO metrics.
 """
-import math
+from dataclasses import dataclass, field
 
 import pandas as pd
-from utils.exchange_rates import get_exchange_rate_history, get_rate_at_date
+
+from core.transactions import normalize_transactions
+from utils.exchange_rates import (
+    get_exchange_rate_history,
+    get_latest_rate,
+    get_rate_at_date,
+)
+from utils.numbers import is_missing
 from utils.price_fetcher import get_current_prices
 
 
 _QTY_EPSILON = 1e-9
+
+# Columns in the portfolio (base) currency. The UI appends the currency code.
+VALUE_BASE = 'Current Value (base)'
+UNREALIZED_BASE = 'Unrealized P&L (base)'
+COST_BASE = 'Cost (base)'
+PROCEEDS_BASE = 'Proceeds (base)'
+REALIZED_BASE = 'Realized P&L (base)'
+FOMO_BASE = 'FOMO (base)'
+
+
+@dataclass
+class PortfolioResult:
+    """Everything the UI needs. Totals are in the portfolio currency."""
+    open_positions: pd.DataFrame
+    sales: pd.DataFrame
+    total_value: float = 0.0
+    realized_pl: float = 0.0
+    unrealized_pl: float = 0.0
+    # Cost basis of the open positions included in `unrealized_pl`.
+    unrealized_cost: float = 0.0
+    warnings: list = field(default_factory=list)
+
+    @property
+    def total_pl(self):
+        if is_missing(self.realized_pl) or is_missing(self.unrealized_pl):
+            return float('nan')
+        return self.realized_pl + self.unrealized_pl
+
+    @property
+    def unrealized_pl_percent(self):
+        if is_missing(self.unrealized_pl) or is_missing(self.unrealized_cost) or self.unrealized_cost <= 0:
+            return float('nan')
+        return self.unrealized_pl / self.unrealized_cost * 100
 
 
 def _empty_holding():
@@ -25,20 +65,6 @@ def _empty_holding():
     }
 
 
-def _is_missing(value):
-    if value is None:
-        return True
-    try:
-        if pd.isna(value):
-            return True
-    except TypeError:
-        pass
-    try:
-        return not math.isfinite(float(value))
-    except (TypeError, ValueError):
-        return True
-
-
 def _sum_known(series):
     """Sum finite values. Empty input is 0. All-missing input is NaN."""
     if series is None or len(series) == 0:
@@ -49,26 +75,30 @@ def _sum_known(series):
     return float(known.sum())
 
 
-def _lookup_rate(curr_orig, target_currency, rates_cache, date_tx):
-    if curr_orig == target_currency:
-        return 1.0
-    rate_series = rates_cache.get(curr_orig)
-    return get_rate_at_date(rate_series, date_tx)
+class _RateBook:
+    """Exchange rate series fetched once per currency pair and reused."""
 
+    def __init__(self, refresh_key):
+        self._refresh_key = refresh_key
+        self._series = {}
 
-def _live_rate(currency, target_currency, rates_live_cache):
-    if currency == target_currency:
-        return 1.0
-    series = rates_live_cache.get(currency)
-    if series is None or len(series) == 0:
-        return None
-    cleaned = series.dropna()
-    if cleaned.empty:
-        return None
-    rate = float(cleaned.iloc[-1])
-    if not math.isfinite(rate) or rate <= 0:
-        return None
-    return rate
+    def series(self, base, target):
+        if base == target:
+            return None
+        key = (base, target)
+        if key not in self._series:
+            self._series[key] = get_exchange_rate_history(base, target, refresh_key=self._refresh_key)
+        return self._series[key]
+
+    def at(self, base, target, date_tx):
+        if base == target:
+            return 1.0
+        return get_rate_at_date(self.series(base, target), date_tx)
+
+    def latest(self, base, target):
+        if base == target:
+            return 1.0
+        return get_latest_rate(self.series(base, target))
 
 
 def process_portfolio(df, target_currency, refresh_key=0):
@@ -79,8 +109,9 @@ def process_portfolio(df, target_currency, refresh_key=0):
     Buys are applied before sells on the same date. A sell larger than the
     open quantity realizes P&L only on the shares actually held. Each ticker
     keeps the currency of its first buy; later rows in another currency are
-    ignored. Missing prices and exchange rates stay unknown and are left out
-    of the totals.
+    ignored. When Yahoo quotes a ticker in another currency, the live price is
+    converted to the ticker's transaction currency. Missing prices and
+    exchange rates stay unknown and are left out of the totals.
 
     Args:
         df: DataFrame with transaction data
@@ -88,81 +119,49 @@ def process_portfolio(df, target_currency, refresh_key=0):
         refresh_key: Parameter to force price and FX refresh
 
     Returns:
-        tuple: (df_open, df_closed, total_value, total_realized_pl,
-                total_unrealized_pl, warnings)
+        PortfolioResult
     """
-    if df.empty:
-        return pd.DataFrame(), pd.DataFrame(), 0.0, 0.0, 0.0, []
+    if df is None or df.empty:
+        return PortfolioResult(pd.DataFrame(), pd.DataFrame())
 
-    df = df.copy()
-    df['_sort_type'] = (
-        df['Type'].astype(str).str.strip().str.upper()
-        .map({'BUY': 0, 'SELL': 1})
-        .fillna(2)
-    )
+    df, warnings = normalize_transactions(df)
+    if df.empty:
+        return PortfolioResult(pd.DataFrame(), pd.DataFrame(), warnings=warnings)
+
+    df['_sort_type'] = df['Type'].map({'BUY': 0, 'SELL': 1})
     # mergesort is stable, so two buys on the same day keep their entry order.
     df = df.sort_values(by=['Date', '_sort_type'], kind='mergesort')
 
+    rates = _RateBook(refresh_key)
     holdings = {}
     closed_positions = []
-    warnings = []
-
-    currencies_in_use = df['Currency'].dropna().astype(str).str.strip().str.upper().unique()
-    rates_cache = {}
-    for curr in currencies_in_use:
-        if curr != target_currency:
-            rates_cache[curr] = get_exchange_rate_history(
-                curr, target_currency, period="max", refresh_key=refresh_key
-            )
-
     realized_amounts = []
     realized_incomplete = False
 
-    for _, row in df.iterrows():
-        tx_type = str(row['Type']).strip().upper()
-        ticker = str(row['Ticker']).strip().upper()
-        if not ticker or ticker == 'NAN':
-            warnings.append("A transaction without a ticker was ignored.")
-            continue
-        if tx_type not in ('BUY', 'SELL'):
+    for row in df.itertuples(index=False):
+        tx_type = row.Type
+        ticker = row.Ticker
+        qty = row.Qty
+        price_orig = row.Price
+        curr_orig = row.Currency
+        date_tx = row.Date
+
+        position = holdings.setdefault(ticker, _empty_holding())
+        if position['currency'] and curr_orig != position['currency']:
             warnings.append(
-                f"{ticker} on {row['Date']}: type '{row['Type']}' was ignored. Use BUY or SELL."
+                f"{tx_type} {ticker} on {date_tx} in {curr_orig} was ignored. "
+                f"This ticker is tracked in {position['currency']}."
             )
             continue
 
-        try:
-            qty = float(row['Qty'])
-            price_orig = float(row['Price'])
-        except (TypeError, ValueError):
-            warnings.append(f"{ticker} on {row['Date']}: quantity or price is not a number. Row ignored.")
-            continue
-        if qty <= 0 or price_orig <= 0 or not math.isfinite(qty) or not math.isfinite(price_orig):
-            warnings.append(f"{ticker} on {row['Date']}: quantity and price must be positive. Row ignored.")
-            continue
-
-        curr_orig = str(row['Currency']).strip().upper()
-        date_tx = row['Date']
-
-        if ticker not in holdings:
-            holdings[ticker] = _empty_holding()
-
-        position = holdings[ticker]
-        rate = _lookup_rate(curr_orig, target_currency, rates_cache, date_tx)
+        rate = rates.at(curr_orig, target_currency, date_tx)
 
         if tx_type == 'BUY':
-            if position['currency'] and curr_orig != position['currency']:
-                warnings.append(
-                    f"BUY {ticker} on {date_tx} in {curr_orig} was ignored. "
-                    f"This ticker is already tracked in {position['currency']}."
-                )
-                continue
-
             position['currency'] = curr_orig
-            add_cost_orig = qty * price_orig
             position['qty'] += qty
-            position['total_cost_orig'] += add_cost_orig
+            position['total_cost_orig'] += qty * price_orig
 
-            if _is_missing(rate):
+            if is_missing(rate):
                 position['fx_ok'] = False
                 warnings.append(
                     f"No exchange rate for {curr_orig} to {target_currency} on {date_tx} ({ticker}). "
@@ -171,81 +170,71 @@ def process_portfolio(df, target_currency, refresh_key=0):
             elif position['fx_ok']:
                 position['total_cost_conv'] += qty * price_orig * rate
 
-            if position['qty'] > 0:
-                position['pmc_orig'] = position['total_cost_orig'] / position['qty']
-                if position['fx_ok']:
-                    position['pmc_conv'] = position['total_cost_conv'] / position['qty']
-
-        elif tx_type == 'SELL':
-            if position['currency'] and curr_orig != position['currency']:
-                warnings.append(
-                    f"SELL {ticker} on {date_tx} in {curr_orig} was ignored. "
-                    f"This ticker is tracked in {position['currency']}."
-                )
-                continue
-
-            available = position['qty']
-            if available <= _QTY_EPSILON:
-                warnings.append(
-                    f"SELL {ticker} on {date_tx} for {qty:g} shares was ignored because there was no open position."
-                )
-                continue
-
-            if qty > available + _QTY_EPSILON:
-                excess = qty - available
-                warnings.append(
-                    f"SELL {ticker} on {date_tx} for {qty:g} shares exceeds the {available:g} shares held. "
-                    f"The extra {excess:g} shares were excluded from P&L."
-                )
-                qty = available
-
-            pmc_orig_at_sale = position['pmc_orig']
-            pmc_conv_at_sale = position['pmc_conv']
-            sell_converted = position['fx_ok'] and not _is_missing(rate)
-
-            if not sell_converted:
-                realized_pl = float('nan')
-                proceeds = float('nan')
-                realized_incomplete = True
-                if _is_missing(rate):
-                    warnings.append(
-                        f"No exchange rate for {curr_orig} to {target_currency} on {date_tx} ({ticker}). "
-                        "That sale is excluded from realized P&L."
-                    )
-                elif not position['fx_ok']:
-                    warnings.append(
-                        f"Realized P&L for {ticker} on {date_tx} is excluded because an earlier "
-                        "exchange rate was missing."
-                    )
-            else:
-                proceeds = qty * price_orig * rate
-                cost_basis = qty * pmc_conv_at_sale
-                realized_pl = proceeds - cost_basis
-                realized_amounts.append(realized_pl)
-
-            closed_positions.append({
-                'Date': date_tx,
-                'Ticker': ticker,
-                'Qty': qty,
-                'Avg Buy Price': pmc_orig_at_sale,
-                'Sell Price': price_orig,
-                'Value': price_orig * qty,
-                'Proceeds': proceeds,
-                'Realized P&L': realized_pl,
-                'Currency': position['currency'] or curr_orig,
-            })
-
-            position['qty'] -= qty
-            position['total_cost_orig'] -= qty * pmc_orig_at_sale
+            position['pmc_orig'] = position['total_cost_orig'] / position['qty']
             if position['fx_ok']:
-                position['total_cost_conv'] -= qty * pmc_conv_at_sale
+                position['pmc_conv'] = position['total_cost_conv'] / position['qty']
+            continue
 
-            if position['qty'] <= _QTY_EPSILON:
-                currency = position['currency']
-                position.update(_empty_holding())
-                # Keep the listing currency so a later buy in another currency is still rejected.
-                # A new lot after a flat position starts its converted cost from scratch.
-                position['currency'] = currency
+        # SELL
+        available = position['qty']
+        if available <= _QTY_EPSILON:
+            warnings.append(
+                f"SELL {ticker} on {date_tx} for {qty:g} shares was ignored because there was no open position."
+            )
+            continue
+
+        if qty > available + _QTY_EPSILON:
+            warnings.append(
+                f"SELL {ticker} on {date_tx} for {qty:g} shares exceeds the {available:g} shares held. "
+                f"The extra {qty - available:g} shares were excluded from P&L."
+            )
+            qty = available
+
+        pmc_orig_at_sale = position['pmc_orig']
+        pmc_conv_at_sale = position['pmc_conv']
+
+        if position['fx_ok'] and not is_missing(rate):
+            proceeds = qty * price_orig * rate
+            realized_pl = proceeds - qty * pmc_conv_at_sale
+            realized_amounts.append(realized_pl)
+        else:
+            proceeds = float('nan')
+            realized_pl = float('nan')
+            realized_incomplete = True
+            if is_missing(rate):
+                warnings.append(
+                    f"No exchange rate for {curr_orig} to {target_currency} on {date_tx} ({ticker}). "
+                    "That sale is excluded from realized P&L."
+                )
+            else:
+                warnings.append(
+                    f"Realized P&L for {ticker} on {date_tx} is excluded because an earlier "
+                    "exchange rate was missing."
+                )
+
+        closed_positions.append({
+            'Date': date_tx,
+            'Ticker': ticker,
+            'Qty': qty,
+            'Avg Buy Price': pmc_orig_at_sale,
+            'Sell Price': price_orig,
+            'Value': price_orig * qty,
+            PROCEEDS_BASE: proceeds,
+            REALIZED_BASE: realized_pl,
+            'Currency': position['currency'],
+        })
+
+        position['qty'] -= qty
+        position['total_cost_orig'] -= qty * pmc_orig_at_sale
+        if position['fx_ok']:
+            position['total_cost_conv'] -= qty * pmc_conv_at_sale
+
+        if position['qty'] <= _QTY_EPSILON:
+            currency = position['currency']
+            position.update(_empty_holding())
+            # Keep the listing currency so a later buy in another currency is still rejected.
+            # A new lot after a flat position starts its converted cost from scratch.
+            position['currency'] = currency
 
     if realized_amounts:
         total_realized_pl = float(sum(realized_amounts))
@@ -255,104 +244,116 @@ def process_portfolio(df, target_currency, refresh_key=0):
         total_realized_pl = 0.0
 
     active_tickers = [t for t, data in holdings.items() if data['qty'] > _QTY_EPSILON]
-    sold_tickers = list({pos['Ticker'] for pos in closed_positions})
-    all_tickers_needed = sorted(set(active_tickers + sold_tickers))
+    sold_tickers = {pos['Ticker'] for pos in closed_positions}
+    quotes = get_current_prices(sorted(set(active_tickers) | sold_tickers), refresh_key=refresh_key)
 
-    current_prices = get_current_prices(all_tickers_needed, refresh_key=refresh_key)
+    ticker_currency = {t: h['currency'] for t, h in holdings.items() if h['currency']}
+    live_prices = _live_prices_in_tx_currency(quotes, ticker_currency, rates, warnings)
 
-    ticker_currencies = {}
-    for t, data in holdings.items():
-        if data.get('currency'):
-            ticker_currencies[t] = data['currency']
-    for pos in closed_positions:
-        ticker_currencies.setdefault(pos['Ticker'], pos['Currency'])
+    df_open = _build_open_positions(active_tickers, holdings, live_prices, rates, target_currency, warnings)
+    df_closed = _build_sales_history(closed_positions, live_prices, rates, target_currency, warnings)
 
-    rates_live_cache = {}
-    for curr in set(ticker_currencies.values()):
-        if curr != target_currency:
-            rates_live_cache[curr] = get_exchange_rate_history(
-                curr, target_currency, period="5d", refresh_key=refresh_key
-            )
+    if df_open.empty:
+        total_value = unrealized = cost = 0.0
+    else:
+        total_value = _sum_known(df_open[VALUE_BASE])
+        unrealized = _sum_known(df_open[UNREALIZED_BASE])
+        included = df_open[UNREALIZED_BASE].notna()
+        cost = _sum_known(df_open.loc[included, COST_BASE]) if included.any() else float('nan')
 
-    df_open = _build_open_positions(
-        active_tickers, holdings, current_prices,
-        rates_live_cache, target_currency, warnings
+    return PortfolioResult(
+        open_positions=df_open,
+        sales=df_closed,
+        total_value=total_value,
+        realized_pl=total_realized_pl,
+        unrealized_pl=unrealized,
+        unrealized_cost=cost,
+        warnings=_unique(warnings),
     )
-    df_closed = _build_sales_history(
-        closed_positions, current_prices,
-        rates_live_cache, target_currency, warnings
-    )
-
-    total_value = _sum_known(df_open['_Current Value Conv']) if not df_open.empty else 0.0
-    total_unrealized_pl = _sum_known(df_open['_Unrealized P&L Conv']) if not df_open.empty else 0.0
-
-    return df_open, df_closed, total_value, total_realized_pl, total_unrealized_pl, _unique_warnings(warnings)
 
 
-def _unique_warnings(warnings):
-    seen = set()
-    unique = []
-    for message in warnings:
-        if message not in seen:
-            seen.add(message)
-            unique.append(message)
-    return unique
+def _live_prices_in_tx_currency(quotes, ticker_currency, rates, warnings):
+    """
+    Live price per ticker in the currency its transactions are recorded in.
+
+    When Yahoo quotes the ticker in another currency (e.g. AAPL in USD but
+    bought in EUR), the price is converted at the latest rate.
+    """
+    prices = {}
+    converted = []
+    unconvertible = []
+    for ticker, quote in quotes.items():
+        tx_currency = ticker_currency.get(ticker)
+        price = quote.get('price')
+        quote_currency = quote.get('currency')
+        if is_missing(price) or not tx_currency:
+            continue
+        if not quote_currency or quote_currency == tx_currency:
+            prices[ticker] = price
+            continue
+        rate = rates.latest(quote_currency, tx_currency)
+        if is_missing(rate):
+            unconvertible.append(f"{ticker} ({quote_currency} to {tx_currency})")
+            continue
+        prices[ticker] = price * rate
+        converted.append(f"{ticker} ({quote_currency} to {tx_currency})")
+
+    if converted:
+        warnings.append(
+            "Market price converted to the transaction currency at today's rate for "
+            f"{', '.join(converted)}. Check that the transactions use the right currency."
+        )
+    if unconvertible:
+        warnings.append(
+            f"Market price could not be converted for {', '.join(unconvertible)}. "
+            "Those positions are shown without a current price."
+        )
+    return prices
 
 
-def _build_open_positions(active_tickers, holdings, current_prices,
-                          rates_live_cache, target_currency, warnings):
+def _unique(messages):
+    return list(dict.fromkeys(messages))
+
+
+def _build_open_positions(active_tickers, holdings, live_prices, rates, target_currency, warnings):
     """
     Build DataFrame for open positions.
 
-    Display amounts stay in the instrument currency. Columns prefixed with
-    '_' are full-precision values in the portfolio currency and are only
-    used for totals.
+    Display amounts are in the transaction currency. Columns ending in
+    "(base)" are in the portfolio currency.
     """
     open_positions = []
     missing_prices = []
     missing_fx = []
+    nan = float('nan')
 
     for t in active_tickers:
-        qty = holdings[t]['qty']
-        pmc_orig = holdings[t]['pmc_orig']
-        pmc_conv = holdings[t]['pmc_conv']
-        curr_t = holdings[t]['currency']
-        fx_ok = holdings[t]['fx_ok']
+        holding = holdings[t]
+        qty = holding['qty']
+        pmc_orig = holding['pmc_orig']
+        pmc_conv = holding['pmc_conv']
+        curr_t = holding['currency']
 
-        live_price_orig = current_prices.get(t)
-        if _is_missing(live_price_orig):
-            live_price_orig = None
+        live_price = live_prices.get(t)
+        if is_missing(live_price):
+            live_price = None
             missing_prices.append(t)
 
-        rate_live = _live_rate(curr_t, target_currency, rates_live_cache)
-        if not fx_ok or _is_missing(rate_live):
+        rate_live = rates.latest(curr_t, target_currency) if holding['fx_ok'] else None
+        if is_missing(rate_live):
             rate_live = None
-            if curr_t and curr_t != target_currency:
-                missing_fx.append(f"{t} ({curr_t})")
-            elif not fx_ok:
-                missing_fx.append(t)
+            missing_fx.append(f"{t} ({curr_t})" if curr_t != target_currency else t)
 
-        if live_price_orig is None:
-            market_value_orig = float('nan')
-            unrealized_pl_orig = float('nan')
-            pl_percent = float('nan')
-            current_price = float('nan')
-        else:
-            current_price = live_price_orig
-            market_value_orig = qty * live_price_orig
-            unrealized_pl_orig = (live_price_orig - pmc_orig) * qty
-            pl_percent = (
-                (live_price_orig - pmc_orig) / pmc_orig * 100
-                if pmc_orig > 0 else float('nan')
-            )
-
-        if live_price_orig is None or rate_live is None:
-            market_value_conv = float('nan')
-            unrealized_pl_conv = float('nan')
-        else:
-            live_price_conv = live_price_orig * rate_live
-            market_value_conv = qty * live_price_conv
-            unrealized_pl_conv = (live_price_conv - pmc_conv) * qty
+        current_price = market_value = unrealized = pl_percent = nan
+        value_base = unrealized_base = nan
+        if live_price is not None:
+            current_price = live_price
+            market_value = qty * live_price
+            unrealized = (live_price - pmc_orig) * qty
+            pl_percent = (live_price - pmc_orig) / pmc_orig * 100 if pmc_orig > 0 else nan
+            if rate_live is not None:
+                value_base = market_value * rate_live
+                unrealized_base = value_base - qty * pmc_conv
 
         open_positions.append({
             'Ticker': t,
@@ -360,38 +361,36 @@ def _build_open_positions(active_tickers, holdings, current_prices,
             'Avg Price': pmc_orig,
             'Current Price': current_price,
             'Initial Value': pmc_orig * qty,
-            'Current Value': market_value_orig,
-            'Unrealized P&L': unrealized_pl_orig,
+            'Current Value': market_value,
+            'Unrealized P&L': unrealized,
             'Unrealized P&L %': pl_percent,
             'Currency': curr_t,
-            '_Current Value Conv': market_value_conv,
-            '_Unrealized P&L Conv': unrealized_pl_conv,
+            VALUE_BASE: value_base,
+            UNREALIZED_BASE: unrealized_base,
+            COST_BASE: qty * pmc_conv if holding['fx_ok'] else nan,
         })
 
     if missing_prices:
-        names = ", ".join(missing_prices)
         warnings.append(
-            f"Current price unavailable for {names}. "
+            f"Current price unavailable for {', '.join(missing_prices)}. "
             "Those positions are excluded from portfolio totals."
         )
     if missing_fx:
-        names = ", ".join(dict.fromkeys(missing_fx))
         warnings.append(
-            f"Portfolio-currency value unavailable for {names}. "
+            f"Portfolio-currency value unavailable for {', '.join(_unique(missing_fx))}. "
             "Those positions are excluded from portfolio totals."
         )
 
     return pd.DataFrame(open_positions)
 
 
-def _build_sales_history(closed_positions, current_prices,
-                         rates_live_cache, target_currency, warnings):
+def _build_sales_history(closed_positions, live_prices, rates, target_currency, warnings):
     """
     Build DataFrame for sales history with FOMO analysis.
 
-    FOMO in the table is in the instrument currency (sale proceeds minus
-    today's value). `_FOMO Conv` is the same difference in portfolio currency.
-    Positive FOMO means the sale beat today's price.
+    FOMO is the sale value minus today's value of the same shares, in the
+    transaction currency; FOMO (base) is the same difference in portfolio
+    currency. Positive FOMO means the sale beat today's price.
     """
     missing_prices = []
     missing_fx = []
@@ -400,47 +399,36 @@ def _build_sales_history(closed_positions, current_prices,
         t = pos['Ticker']
         qty = pos['Qty']
         curr_t = pos['Currency']
-        proceeds_base = pos['Proceeds']
 
-        live_price_orig = current_prices.get(t)
-        if _is_missing(live_price_orig):
-            live_price_orig = None
+        live_price = live_prices.get(t)
+        if is_missing(live_price):
             missing_prices.append(t)
-
-        rate_live = _live_rate(curr_t, target_currency, rates_live_cache)
-        if _is_missing(rate_live):
-            rate_live = None
-            if curr_t and curr_t != target_currency:
-                missing_fx.append(f"{t} ({curr_t})")
-
-        if live_price_orig is None:
-            pos['Current Price'] = float('nan')
-            pos['Value Today'] = float('nan')
-            pos['FOMO'] = float('nan')
-            pos['_FOMO Conv'] = float('nan')
+            pos['Current Price'] = pos['Value Today'] = pos['FOMO'] = pos[FOMO_BASE] = float('nan')
             continue
 
-        value_today_orig = live_price_orig * qty
-        pos['Current Price'] = live_price_orig
-        pos['Value Today'] = value_today_orig
-        pos['FOMO'] = (pos['Sell Price'] * qty) - value_today_orig
+        rate_live = rates.latest(curr_t, target_currency)
+        if is_missing(rate_live):
+            rate_live = None
+            missing_fx.append(f"{t} ({curr_t})")
 
-        if rate_live is None or _is_missing(proceeds_base):
-            pos['_FOMO Conv'] = float('nan')
+        value_today = live_price * qty
+        pos['Current Price'] = live_price
+        pos['Value Today'] = value_today
+        pos['FOMO'] = pos['Value'] - value_today
+
+        if rate_live is None or is_missing(pos[PROCEEDS_BASE]):
+            pos[FOMO_BASE] = float('nan')
         else:
-            value_today_conv = live_price_orig * rate_live * qty
-            pos['_FOMO Conv'] = proceeds_base - value_today_conv
+            pos[FOMO_BASE] = pos[PROCEEDS_BASE] - value_today * rate_live
 
     if missing_prices:
-        names = ", ".join(dict.fromkeys(missing_prices))
         warnings.append(
-            f"Current price unavailable for sold ticker {names}. "
+            f"Current price unavailable for sold ticker {', '.join(_unique(missing_prices))}. "
             "FOMO for those sales is excluded from the totals."
         )
     if missing_fx:
-        names = ", ".join(dict.fromkeys(missing_fx))
         warnings.append(
-            f"Exchange rate unavailable for {names}. "
+            f"Exchange rate unavailable for {', '.join(_unique(missing_fx))}. "
             "FOMO totals exclude those sales."
         )
 

@@ -3,10 +3,10 @@ InvestTrack - Stock Portfolio Tracker
 Main application entry point.
 """
 import streamlit as st
-import pandas as pd
 
 from config import PAGE_TITLE, PAGE_LAYOUT
 from core.portfolio_processor import process_portfolio
+from core.transactions import empty_transactions
 from ui.sidebar import render_sidebar
 from ui.main_view import render_main_view, render_empty_state
 
@@ -15,45 +15,32 @@ from ui.main_view import render_main_view, render_empty_state
 st.set_page_config(page_title=PAGE_TITLE, layout=PAGE_LAYOUT)
 
 
-# --- Initialize Session State ---
 def init_session_state():
     """Initialize session state variables if they don't exist."""
     if 'df_tx' not in st.session_state:
-        st.session_state.df_tx = pd.DataFrame(
-            columns=['Date', 'Ticker', 'Type', 'Qty', 'Price', 'Currency']
-        )
-    
+        st.session_state.df_tx = empty_transactions()
     if 'refresh_key' not in st.session_state:
         st.session_state.refresh_key = 0
 
 
 def main():
     """Main application function."""
-    # Initialize session state
     init_session_state()
-    
-    # Render sidebar and get target currency
     target_currency = render_sidebar()
-    
-    # Process and display portfolio
-    if not st.session_state.df_tx.empty:
-        # Ensure Date is datetime.date for correct sorting
-        st.session_state.df_tx['Date'] = pd.to_datetime(
-            st.session_state.df_tx['Date']
-        ).dt.date
-        
-        with st.spinner('Processing data and exchange rates...'):
-            df_pos, df_hist, val_tot, pl_real, pl_unreal, warnings = process_portfolio(
-                st.session_state.df_tx, 
-                target_currency, 
-                refresh_key=st.session_state.refresh_key
-            )
-        
-        render_main_view(
-            df_pos, df_hist, val_tot, pl_real, pl_unreal, target_currency, warnings
-        )
-    else:
+
+    # Transactions are normalized when they enter session state (CSV or form).
+    if st.session_state.df_tx.empty:
         render_empty_state()
+        return
+
+    with st.spinner('Processing data and exchange rates...'):
+        result = process_portfolio(
+            st.session_state.df_tx,
+            target_currency,
+            refresh_key=st.session_state.refresh_key,
+        )
+
+    render_main_view(result, target_currency)
 
 
 if __name__ == "__main__":

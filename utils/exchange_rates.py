@@ -1,27 +1,48 @@
 """
 Exchange rate functions for currency conversion.
 """
+import logging
 import math
 
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from config import PRICE_CACHE_TTL
+from config import CACHE_MAX_ENTRIES, FX_MAX_GAP_DAYS, PRICE_CACHE_TTL
+
+logger = logging.getLogger(__name__)
 
 
-@st.cache_data(ttl=PRICE_CACHE_TTL)
-def get_exchange_rate_history(base_currency, target_currency, period="max", refresh_key=0):
+def _clean_close(hist):
+    if hist is None or hist.empty or 'Close' not in hist.columns:
+        return None
+    close = pd.to_numeric(hist['Close'], errors='coerce').dropna()
+    close = close[close > 0]
+    if close.empty:
+        return None
+    # Daily FX bars: keep only the date so lookups never depend on time zones.
+    index = close.index
+    if getattr(index, 'tz', None) is not None:
+        index = index.tz_localize(None)
+    close.index = pd.DatetimeIndex(index).normalize()
+    close = close[~close.index.duplicated(keep='last')].sort_index()
+    return close
+
+
+@st.cache_data(ttl=PRICE_CACHE_TTL, max_entries=CACHE_MAX_ENTRIES)
+def get_exchange_rate_history(base_currency, target_currency, refresh_key=0):
     """
-    Downloads the historical exchange rate.
+    Downloads the full daily exchange rate history (base -> target).
+
+    The same series serves historical lookups and the live rate (its last
+    value), so each currency pair is downloaded once per refresh.
 
     Args:
         base_currency: The base currency code (e.g., 'EUR')
         target_currency: The target currency code (e.g., 'USD')
-        period: The historical period to fetch (default: 'max')
-        refresh_key: Change this to bypass the cache, same as price refresh
+        refresh_key: Change this to bypass the cache
 
     Returns:
-        pandas.Series with Date index and rate values, or None if unavailable
+        pandas.Series indexed by naive dates, or None if unavailable
     """
     del refresh_key  # Part of the cache key; not used in the function body.
 
@@ -29,62 +50,61 @@ def get_exchange_rate_history(base_currency, target_currency, period="max", refr
         return None
 
     try:
-        pair = f"{base_currency}{target_currency}=X"
-        hist = yf.Ticker(pair).history(period=period)
+        direct = _clean_close(yf.Ticker(f"{base_currency}{target_currency}=X").history(period="max"))
+        if direct is not None:
+            return direct
 
-        if not hist.empty and 'Close' in hist.columns:
-            close = hist['Close'].dropna()
-            if not close.empty:
-                return close
-
-        pair_inv = f"{target_currency}{base_currency}=X"
-        hist_inv = yf.Ticker(pair_inv).history(period=period)
-
-        if not hist_inv.empty and 'Close' in hist_inv.columns:
-            close_inv = hist_inv['Close'].dropna()
-            close_inv = close_inv[close_inv != 0]
-            if not close_inv.empty:
-                return 1.0 / close_inv
-    except Exception as e:
-        print(f"Error downloading {base_currency}/{target_currency}: {e}")
+        inverse = _clean_close(yf.Ticker(f"{target_currency}{base_currency}=X").history(period="max"))
+        if inverse is not None:
+            return 1.0 / inverse
+    except Exception:
+        logger.warning("Could not download %s/%s", base_currency, target_currency, exc_info=True)
 
     return None
 
 
-def get_rate_at_date(rates_series, date_obj):
+def _valid_rate(value):
+    if value is None or pd.isna(value):
+        return None
+    rate = float(value)
+    if not math.isfinite(rate) or rate <= 0:
+        return None
+    return rate
+
+
+def get_rate_at_date(rates_series, date_obj, max_gap_days=FX_MAX_GAP_DAYS):
     """
-    Retrieves the exchange rate for a specific date from the historical series.
-    Uses the last available rate on or before that date.
+    Returns the rate on `date_obj`, or the last one before it.
 
-    Args:
-        rates_series: pandas.Series with historical exchange rates
-        date_obj: The date to look up
-
-    Returns:
-        float: The exchange rate at the specified date, or None if not found
+    Returns None when the date is before the start of the series, or when the
+    closest earlier quote is more than `max_gap_days` old, instead of
+    silently using a rate from a very different date.
     """
     if rates_series is None or len(rates_series) == 0:
         return None
 
     try:
         ts = pd.Timestamp(date_obj)
-        index_tz = getattr(rates_series.index, "tz", None)
-        if ts.tzinfo is None and index_tz is not None:
-            ts = ts.tz_localize(index_tz, nonexistent="shift_forward", ambiguous="NaT")
-        elif ts.tzinfo is not None and index_tz is None:
-            ts = ts.tz_convert(None)
+        if ts.tzinfo is not None:
+            ts = ts.tz_localize(None)
+        ts = ts.normalize()
 
-        idx = rates_series.index.get_indexer([ts], method='pad')[0]
-        if idx == -1:
-            value = rates_series.iloc[0]
-        else:
-            value = rates_series.iloc[idx]
-
-        if pd.isna(value):
+        pos = rates_series.index.searchsorted(ts, side='right') - 1
+        if pos < 0:
             return None
-        rate = float(value)
-        if not math.isfinite(rate) or rate <= 0:
+        if (ts - rates_series.index[pos]).days > max_gap_days:
             return None
-        return rate
+        return _valid_rate(rates_series.iloc[pos])
     except Exception:
+        logger.warning("Rate lookup failed for %s", date_obj, exc_info=True)
         return None
+
+
+def get_latest_rate(rates_series):
+    """The most recent valid rate in the series, or None."""
+    if rates_series is None or len(rates_series) == 0:
+        return None
+    cleaned = rates_series.dropna()
+    if cleaned.empty:
+        return None
+    return _valid_rate(cleaned.iloc[-1])
