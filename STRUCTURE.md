@@ -12,17 +12,21 @@ investtrack/
 │
 ├── core/                           # Business logic
 │   ├── __init__.py
-│   └── portfolio_processor.py      # Portfolio processing, P&L and FOMO calculation
+│   ├── portfolio_processor.py      # Portfolio processing, P&L and FOMO calculation
+│   └── transactions.py             # Transaction validation and normalization
 │
 ├── utils/                          # Utility functions
 │   ├── __init__.py
 │   ├── exchange_rates.py           # Exchange rate management
-│   └── price_fetcher.py            # Stock price download
+│   ├── numbers.py                  # Shared numeric helpers (is_missing)
+│   └── price_fetcher.py            # Stock price and quote currency download
 │
-└── ui/                             # User interface components
-    ├── __init__.py
-    ├── sidebar.py                  # Sidebar with controls
-    └── main_view.py                # Main view with metrics and tables
+├── ui/                             # User interface components
+│   ├── __init__.py
+│   ├── sidebar.py                  # Sidebar with controls
+│   └── main_view.py                # Main view with metrics and tables
+│
+└── tests/                          # pytest suite (market data is mocked)
 ```
 
 ## 📄 Module Descriptions
@@ -31,16 +35,16 @@ investtrack/
 - Main file that orchestrates the application
 - Manages session state initialization
 - Coordinates UI component rendering
-- Only ~60 lines vs ~450 original lines
 
 ### `config.py` - Configuration
 - Global constants (supported currencies, page title, layout)
-- Cache parameters (TTL for prices)
+- Cache parameters (TTL for prices and quote currencies, max entries)
+- FX lookup tolerance and minor-unit currencies (GBp, ZAc, ILA)
 - Easy to modify without touching the logic
 
 ### `core/portfolio_processor.py` - Business Logic
 **Main functions:**
-- `process_portfolio()`: Processes transactions and calculates metrics
+- `process_portfolio()`: Processes transactions and returns a `PortfolioResult`
 - `_build_open_positions()`: Builds open positions DataFrame
 - `_build_sales_history()`: Builds sales history DataFrame with FOMO
 
@@ -50,20 +54,29 @@ investtrack/
 - FOMO analysis on sales
 - Position management (opening/closing)
 
+### `core/transactions.py` - Transactions
+**Functions:**
+- `normalize_transactions()`: Single validator used by CSV import, the manual form and the processor
+- `append_transaction()`: Validates and appends one transaction
+- `empty_transactions()`: Empty table with canonical columns and dtypes
+
 ### `utils/exchange_rates.py` - Exchange Rates
 **Functions:**
-- `get_exchange_rate_history()`: Downloads historical exchange rates from Yahoo Finance
-- `get_rate_at_date()`: Retrieves the rate for a specific date
+- `get_exchange_rate_history()`: Downloads the full daily history from Yahoo Finance (one download per pair)
+- `get_rate_at_date()`: Rate on or before a date; None outside the history or after a long gap
+- `get_latest_rate()`: Most recent rate in the series
 
 **Features:**
 - Cache with `@st.cache_data`
 - Identical currency handling
 - Fallback on inverse rates
-- Timezone-aware handling
+- Index normalized to naive dates, so lookups do not depend on time zones
 
 ### `utils/price_fetcher.py` - Stock Prices
 **Functions:**
-- `get_current_prices()`: Downloads current prices for a list of tickers
+- `get_current_prices()`: Latest price and listing currency for each ticker
+- `get_quote_currency()`: Listing currency reported by Yahoo (cached for a day)
+- `to_major_units()`: Converts minor-unit quotes (e.g. pence) to the major unit
 
 **Features:**
 - Cache with configurable TTL
@@ -80,7 +93,7 @@ investtrack/
 
 **Responsibilities:**
 - Portfolio currency selection
-- Manual price refresh
+- Manual price refresh (the only control that bypasses the price/FX cache)
 - Data Import/Export
 - Transaction entry
 
@@ -130,7 +143,7 @@ investtrack/
 ### Add a new currency
 Modify `config.py`:
 ```python
-CURRENCIES = ["EUR", "USD", "GBP", "CHF", "JPY", "CAD"]  # Add here
+CURRENCIES = ["EUR", "USD", "GBP", ..., "NZD"]  # Add here
 ```
 
 ### Modify P&L calculation
