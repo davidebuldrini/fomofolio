@@ -50,6 +50,17 @@ def test_invalid_rows_are_reported_with_line_numbers_and_blank_rows_skipped():
         assert reason in messages[0]
 
 
+def test_nat_and_timestamps_from_the_editor():
+    raw = _frame([
+        [pd.Timestamp('2024-01-10'), 'AAPL', 'BUY', 1.0, 10.0, 'USD'],
+        [pd.NaT, 'MSFT', None, None, None, None],
+    ])
+    df, messages = normalize_transactions(raw, first_line=1)
+    assert df.loc[0, 'Date'] == dt.date(2024, 1, 10)
+    assert len(df) == 1
+    assert messages[0].startswith("Row 2: invalid date")
+
+
 def test_missing_columns_raise():
     with pytest.raises(MissingColumnsError):
         normalize_transactions(pd.DataFrame({'Date': ['2024-01-01']}))

@@ -11,6 +11,9 @@ from core.portfolio_processor import (
     UNREALIZED_BASE,
     VALUE_BASE,
 )
+from core.storage import data_file_path
+from ui.state import show_notice
+from ui.transactions_editor import render_transactions_editor
 from utils.numbers import is_missing
 
 
@@ -30,19 +33,22 @@ def render_main_view(result, target_currency):
     _render_metrics(result, target_currency)
     st.divider()
 
-    tab1, tab2 = st.tabs(["📊 Current Portfolio", "📜 Sales History"])
+    tab1, tab2, tab3 = st.tabs(["📊 Current Portfolio", "📜 Sales History", "✏️ Transactions"])
     with tab1:
         _render_open_positions(result.open_positions, target_currency)
     with tab2:
         _render_sales_history(result.sales, target_currency)
+    with tab3:
+        render_transactions_editor()
 
 
 def render_empty_state():
     """Renders the empty state when no transactions are present."""
     st.title("📈 Stock Portfolio Tracker")
+    show_notice('editor_notice')
     st.info(
         "No transactions present. Use the sidebar to upload a CSV or add transactions manually. "
-        "Data is kept only for this browser session: export a CSV to keep it."
+        f"Transactions are saved to {data_file_path()}."
     )
 
 
@@ -74,8 +80,7 @@ def _render_metrics(result, target_currency):
     col4.metric("Total P&L", _format_money(result.total_pl, target_currency))
     st.caption(
         f"Totals are in {target_currency}. "
-        "Positions with a missing price or exchange rate are not included. "
-        "Data is kept only for this browser session: export a CSV to keep it."
+        "Positions with a missing price or exchange rate are not included."
     )
 
 

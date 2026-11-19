@@ -13,6 +13,7 @@ investtrack/
 ├── core/                           # Business logic
 │   ├── __init__.py
 │   ├── portfolio_processor.py      # Portfolio processing, P&L and FOMO calculation
+│   ├── storage.py                  # Saving and loading transactions on disk
 │   └── transactions.py             # Transaction validation and normalization
 │
 ├── utils/                          # Utility functions
@@ -23,7 +24,9 @@ investtrack/
 │
 ├── ui/                             # User interface components
 │   ├── __init__.py
+│   ├── state.py                    # Session state synced with the saved file
 │   ├── sidebar.py                  # Sidebar with controls
+│   ├── transactions_editor.py      # Editable transaction table
 │   └── main_view.py                # Main view with metrics and tables
 │
 └── tests/                          # pytest suite (market data is mocked)
@@ -59,6 +62,21 @@ investtrack/
 - `normalize_transactions()`: Single validator used by CSV import, the manual form and the processor
 - `append_transaction()`: Validates and appends one transaction
 - `empty_transactions()`: Empty table with canonical columns and dtypes
+
+### `core/storage.py` - Saved Data
+**Functions:**
+- `load_transactions()`: Reads and validates the saved file; reports unreadable files or invalid rows
+- `save_transactions()`: Atomic write (temp file + replace)
+- `data_file_path()`: `data/transactions.csv`, or `INVESTTRACK_DATA_FILE`
+- `to_csv_bytes()`: CSV used by both the saved file and the export
+
+### `ui/state.py` - Session State
+- `init_session_state()`: Loads the saved file once per session
+- `set_transactions()`: The only way to change transactions: updates state, saves, leaves a notice
+- `show_notice()`: Shows the notice after the rerun
+
+### `ui/transactions_editor.py` - Transaction Editor
+- `render_transactions_editor()`: `st.data_editor` with Save / Discard; validates through `normalize_transactions`
 
 ### `utils/exchange_rates.py` - Exchange Rates
 **Functions:**

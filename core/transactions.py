@@ -48,17 +48,16 @@ def _parse_one_date(value):
     """
     if value is None:
         return None, False
-    if isinstance(value, pd.Timestamp):
-        return (None if pd.isna(value) else value.date()), False
-    if isinstance(value, dt.datetime):
-        return value.date(), False
-    if isinstance(value, dt.date):
-        return value, False
     try:
+        # Checked first: pd.NaT is also an instance of datetime.
         if pd.isna(value):
             return None, False
     except (TypeError, ValueError):
         return None, False
+    if isinstance(value, dt.datetime):  # includes pd.Timestamp
+        return value.date(), False
+    if isinstance(value, dt.date):
+        return value, False
 
     text = str(value).strip()
     if not text:

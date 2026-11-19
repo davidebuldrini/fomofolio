@@ -7,7 +7,9 @@ Single Page Application built with Streamlit for stock portfolio tracking.
 - Realized and Unrealized P&L
 - Multi-currency Support (Automatic conversion to portfolio currency)
 - FOMO Analysis on Sales
-- Export/Import data via CSV
+- Export/Import data via CSV (add to or replace existing transactions)
+- Transactions saved to disk automatically
+- Edit and delete transactions in the Transactions tab
 
 ## Data assumptions
 
@@ -21,7 +23,19 @@ Listings quoted in minor units (for example London stocks quoted in pence, `GBp`
 
 Portfolio totals are in the selected portfolio currency. If a price or exchange rate is missing, that position is left out of the totals instead of being valued at zero. An exchange rate is treated as missing when the transaction date is before the available history or more than a week after the last quote. On a sale, only the shares you actually hold are included in realized P&L. Buys are processed before sells when they share the same date.
 
-Transactions are kept only for the current browser session. Export a CSV to keep them.
+## Saved data
+
+Transactions are saved to `data/transactions.csv` (ignored by git) every time they change: CSV import, the manual form, or the Transactions tab. They are loaded again when the app starts. Set `INVESTTRACK_DATA_FILE` to use another file:
+
+```bash
+INVESTTRACK_DATA_FILE=~/portfolio.csv streamlit run app.py
+```
+
+The file has the same columns as the CSV export. Writes are atomic, so an interrupted save never leaves a half-written file. The file is shared by every browser session of the same app instance.
+
+## Editing transactions
+
+Open the **Transactions** tab to change cells, add rows at the bottom, or select rows and press Delete. Nothing changes until you press **Save changes**; **Discard changes** restores the saved data. Rows with invalid values are listed and nothing is saved until they are fixed.
 
 ## Installation
 Make sure you have the virtual environment active.

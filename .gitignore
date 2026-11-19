@@ -5,3 +5,4 @@ venv/
 .DS_Store
 .cursor/
 .pytest_cache/
+data/

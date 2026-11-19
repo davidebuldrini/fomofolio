@@ -6,11 +6,13 @@ import pandas as pd
 from datetime import date
 
 from config import CURRENCIES
+from core.storage import to_csv_bytes
 from core.transactions import (
     MissingColumnsError,
     append_transaction,
     normalize_transactions,
 )
+from ui.state import set_transactions, show_notice
 
 _MAX_LISTED_ROWS = 15
 
@@ -34,7 +36,7 @@ def render_sidebar():
             st.rerun()
 
         st.divider()
-        _render_notice()
+        show_notice('sidebar_notice')
         _render_upload_section()
         st.divider()
         _render_export_section()
@@ -42,17 +44,6 @@ def render_sidebar():
         _render_transaction_form()
 
     return target_currency
-
-
-def _render_notice():
-    """Shows a message saved before the last rerun, then clears it."""
-    notice = st.session_state.get('sidebar_notice')
-    if not notice:
-        return
-    st.success(notice['success'])
-    if notice.get('warning'):
-        st.warning(notice['warning'])
-    st.session_state.sidebar_notice = None
 
 
 def _bullet_list(lines):
@@ -68,7 +59,16 @@ def _render_upload_section():
     """Renders the CSV upload section."""
     st.header("Import Data")
     uploaded_file = st.file_uploader("Upload CSV", type=['csv'])
-    if uploaded_file is None or not st.button("Load from CSV"):
+    if uploaded_file is None:
+        return
+    has_data = not st.session_state.df_tx.empty
+    mode = st.radio(
+        "Imported rows",
+        ["Add to existing", "Replace all"],
+        disabled=not has_data,
+        help="Replace all deletes the saved transactions and keeps only the file's rows.",
+    )
+    if not st.button("Load from CSV"):
         return
 
     try:
@@ -87,21 +87,26 @@ def _render_upload_section():
         st.error("No valid transactions could be loaded.\n\n" + detail)
         return
 
-    st.session_state.df_tx = cleaned
-    st.session_state.sidebar_notice = {
-        'success': f"Loaded {len(cleaned)} transaction(s).",
-        'warning': ("Notes on the import:\n\n" + _bullet_list(messages)) if messages else None,
-    }
+    if has_data and mode == "Add to existing":
+        combined = pd.concat([st.session_state.df_tx, cleaned], ignore_index=True)
+        success = f"Added {len(cleaned)} transaction(s) to the existing {len(st.session_state.df_tx)}."
+    else:
+        combined = cleaned
+        success = f"Loaded {len(cleaned)} transaction(s)."
+    set_transactions(
+        combined,
+        success,
+        warning=("Notes on the import:\n\n" + _bullet_list(messages)) if messages else None,
+    )
     st.rerun()
 
 
 def _render_export_section():
     """Renders the CSV export section."""
     st.header("Export Data")
-    csv_data = st.session_state.df_tx.to_csv(index=False).encode('utf-8')
     st.download_button(
         "Download Current CSV",
-        csv_data,
+        to_csv_bytes(st.session_state.df_tx),
         "portfolio_data.csv",
         "text/csv",
         key='download-csv'
@@ -134,9 +139,5 @@ def _render_transaction_form():
         st.error("Invalid transaction: " + "; ".join(errors))
         return
 
-    st.session_state.df_tx = new_df
-    st.session_state.sidebar_notice = {
-        'success': f"Added {type_in} {ticker_in.strip().upper()}.",
-        'warning': None,
-    }
+    set_transactions(new_df, f"Added {type_in} {ticker_in.strip().upper()}.")
     st.rerun()
