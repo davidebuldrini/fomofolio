@@ -1,3 +1,3 @@
 """
-Utility functions for InvestTrack application.
+Utility functions for FOMOfolio application.
 """

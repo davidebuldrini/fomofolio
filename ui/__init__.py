@@ -1,3 +1,3 @@
 """
-UI components for InvestTrack application.
+UI components for FOMOfolio application.
 """

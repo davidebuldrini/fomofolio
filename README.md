@@ -1,4 +1,4 @@
-# InvestTrack - Stock Portfolio Tracker
+# FOMOfolio - Stock Portfolio Tracker
 
 Single Page Application built with Streamlit for stock portfolio tracking.
 
@@ -13,7 +13,7 @@ Single Page Application built with Streamlit for stock portfolio tracking.
 
 ## Data assumptions
 
-Enter quantities and prices already adjusted for splits, consistent with the current Yahoo Finance price. InvestTrack does not apply stock splits or dividends. A pre-split lot left at the old quantity will not match the live price, and the P&L will be wrong.
+Enter quantities and prices already adjusted for splits, consistent with the current Yahoo Finance price. FOMOfolio does not apply stock splits or dividends. A pre-split lot left at the old quantity will not match the live price, and the P&L will be wrong.
 
 Dates in `YYYY-MM-DD` format are read as such. Any other format is read day-first (`03/04/2024` is 3 April).
 
@@ -25,10 +25,10 @@ Portfolio totals are in the selected portfolio currency. If a price or exchange 
 
 ## Saved data
 
-Transactions are saved to `data/transactions.csv` (ignored by git) every time they change: CSV import, the manual form, or the Transactions tab. They are loaded again when the app starts. Set `INVESTTRACK_DATA_FILE` to use another file:
+Transactions are saved to `data/transactions.csv` (ignored by git) every time they change: CSV import, the manual form, or the Transactions tab. They are loaded again when the app starts. Set `FOMOFOLIO_DATA_FILE` to use another file:
 
 ```bash
-INVESTTRACK_DATA_FILE=~/portfolio.csv streamlit run app.py
+FOMOFOLIO_DATA_FILE=~/portfolio.csv streamlit run app.py
 ```
 
 The file has the same columns as the CSV export. Writes are atomic, so an interrupted save never leaves a half-written file. The file is shared by every browser session of the same app instance.
@@ -39,15 +39,15 @@ Open the **Transactions** tab to change cells, add rows at the bottom, or select
 
 ## Desktop app (macOS and Windows)
 
-InvestTrack can be packaged as a standalone desktop app with Python included. It opens in a native window, and closing the window stops the app.
+FOMOfolio can be packaged as a standalone desktop app with Python included. It opens in a native window, and closing the window stops the app.
 
-Build on macOS (creates `dist/InvestTrack.app` and a `.dmg`):
+Build on macOS (creates `dist/FOMOfolio.app` and a `.dmg`):
 
 ```bash
 ./build_mac.sh
 ```
 
-Build on Windows (creates `dist\InvestTrack\InvestTrack.exe` and a `.zip`):
+Build on Windows (creates `dist\FOMOfolio\FOMOfolio.exe` and a `.zip`):
 
 ```powershell
 .\build_win.ps1
@@ -57,13 +57,15 @@ Each build targets the system it runs on (Apple Silicon, Intel Mac or Windows). 
 
 The desktop app saves transactions in a per-user folder, not in `data/`:
 
-- macOS: `~/Library/Application Support/InvestTrack/transactions.csv`
-- Windows: `%APPDATA%\InvestTrack\transactions.csv`
+- macOS: `~/Library/Application Support/FOMOfolio/transactions.csv`
+- Windows: `%APPDATA%\FOMOfolio\transactions.csv`
+
+The app was previously called InvestTrack. On first start, transactions saved in the old `InvestTrack` folder are copied to the new one automatically.
 
 To move existing data to the macOS app:
 
 ```bash
-mkdir -p ~/Library/Application\ Support/InvestTrack && cp data/transactions.csv ~/Library/Application\ Support/InvestTrack/
+mkdir -p ~/Library/Application\ Support/FOMOfolio && cp data/transactions.csv ~/Library/Application\ Support/FOMOfolio/
 ```
 
 The apps are not signed with a developer certificate. The first time, open them with right-click → Open on macOS, or More info → Run anyway on Windows.

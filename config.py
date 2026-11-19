@@ -1,12 +1,12 @@
 """
-Configuration constants for InvestTrack application.
+Configuration constants for FOMOfolio application.
 """
 
 # Supported currencies
 CURRENCIES = ["EUR", "USD", "GBP", "CHF", "JPY", "CAD", "AUD", "HKD", "SEK", "NOK", "DKK"]
 
 # Page configuration
-PAGE_TITLE = "InvestTrack - Portfolio Tracker"
+PAGE_TITLE = "FOMOfolio - Portfolio Tracker"
 PAGE_LAYOUT = "wide"
 
 # Cache TTL (Time To Live) in seconds

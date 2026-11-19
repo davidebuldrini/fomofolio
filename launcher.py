@@ -1,5 +1,5 @@
 """
-Desktop launcher for InvestTrack.
+Desktop launcher for FOMOfolio.
 
 Starts the Streamlit server in a child process on a free localhost port and
 shows it in a native window (pywebview). Closing the window stops the server.
@@ -16,7 +16,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-APP_NAME = "InvestTrack"
+APP_NAME = "FOMOfolio"
 SERVER_FLAG = "--server"
 STARTUP_TIMEOUT = 60  # seconds
 
@@ -26,23 +26,35 @@ def resource_dir():
     return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
 
-def user_data_dir():
+LEGACY_APP_NAME = "InvestTrack"  # name used before the rename
+
+
+def user_data_dir(name=APP_NAME):
     """Per-user folder for saved transactions."""
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / APP_NAME
+        return Path.home() / "Library" / "Application Support" / name
     if sys.platform == "win32":
         base = os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming"
-        return Path(base) / APP_NAME
+        return Path(base) / name
     base = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
-    return Path(base) / APP_NAME
+    return Path(base) / name
+
+
+def migrate_legacy_data(target):
+    """Copy transactions saved under the old app name, if not migrated yet."""
+    legacy = user_data_dir(LEGACY_APP_NAME) / "transactions.csv"
+    if legacy.is_file() and not target.exists():
+        target.write_bytes(legacy.read_bytes())
 
 
 def configure_data_file():
     """In the packaged app, save transactions in the user data folder."""
-    if getattr(sys, "frozen", False) and not os.environ.get("INVESTTRACK_DATA_FILE"):
+    if getattr(sys, "frozen", False) and not os.environ.get("FOMOFOLIO_DATA_FILE"):
         folder = user_data_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        os.environ["INVESTTRACK_DATA_FILE"] = str(folder / "transactions.csv")
+        target = folder / "transactions.csv"
+        migrate_legacy_data(target)
+        os.environ["FOMOFOLIO_DATA_FILE"] = str(target)
 
 
 def free_port():
@@ -107,13 +119,13 @@ def run_window():
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    env = dict(os.environ, INVESTTRACK_PARENT_PID=str(os.getpid()))
+    env = dict(os.environ, FOMOFOLIO_PARENT_PID=str(os.getpid()))
     proc = subprocess.Popen(server_command(port), env=env, **kwargs)
     try:
         if not wait_until_ready(url, proc):
             webview.create_window(
                 APP_NAME,
-                html="<h3 style='font-family:sans-serif'>InvestTrack could not start.</h3>",
+                html="<h3 style='font-family:sans-serif'>FOMOfolio could not start.</h3>",
             )
         else:
             webview.create_window(APP_NAME, url, width=1400, height=900, min_size=(900, 600))
@@ -129,7 +141,7 @@ def run_window():
 def main():
     configure_data_file()
     if len(sys.argv) >= 3 and sys.argv[1] == SERVER_FLAG:
-        parent = os.environ.get("INVESTTRACK_PARENT_PID")
+        parent = os.environ.get("FOMOFOLIO_PARENT_PID")
         if parent:
             watch_parent(int(parent))
         run_server(int(sys.argv[2]))

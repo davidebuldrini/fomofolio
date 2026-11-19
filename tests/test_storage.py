@@ -64,5 +64,5 @@ def test_unreadable_file_is_reported(tmp_path):
 
 
 def test_env_override(monkeypatch, tmp_path):
-    monkeypatch.setenv("INVESTTRACK_DATA_FILE", str(tmp_path / "x.csv"))
+    monkeypatch.setenv("FOMOFOLIO_DATA_FILE", str(tmp_path / "x.csv"))
     assert data_file_path() == tmp_path / "x.csv"

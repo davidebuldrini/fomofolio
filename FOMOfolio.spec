@@ -1,13 +1,13 @@
-# PyInstaller spec for InvestTrack (macOS .app and Windows .exe).
-# Build with: pyinstaller --noconfirm InvestTrack.spec
+# PyInstaller spec for FOMOfolio (macOS .app and Windows .exe).
+# Build with: pyinstaller --noconfirm FOMOfolio.spec
 import os
 import platform
 import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
-APP_NAME = "InvestTrack"
-VERSION = os.environ.get("INVESTTRACK_VERSION", "0.0.0").lstrip("v")
+APP_NAME = "FOMOfolio"
+VERSION = os.environ.get("FOMOFOLIO_VERSION", "0.0.0").lstrip("v")
 
 # App modules are imported by app.py at runtime through Streamlit, so the
 # analysis cannot see them from launcher.py.
@@ -25,8 +25,8 @@ for dist in ("streamlit", "pandas", "yfinance", "numpy", "pyarrow", "altair", "p
     except Exception:
         pass
 
-icon_mac = "assets/InvestTrack.icns" if os.path.exists("assets/InvestTrack.icns") else None
-icon_win = "assets/InvestTrack.ico" if os.path.exists("assets/InvestTrack.ico") else None
+icon_mac = "assets/FOMOfolio.icns" if os.path.exists("assets/FOMOfolio.icns") else None
+icon_win = "assets/FOMOfolio.ico" if os.path.exists("assets/FOMOfolio.ico") else None
 
 a = Analysis(
     ["launcher.py"],
@@ -58,7 +58,7 @@ if sys.platform == "darwin":
         coll,
         name=f"{APP_NAME}.app",
         icon=icon_mac,
-        bundle_identifier="com.investtrack.app",
+        bundle_identifier="com.fomofolio.app",
         version=VERSION,
         info_plist={
             "CFBundleName": APP_NAME,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build dist/InvestTrack.app and dist/InvestTrack-macos-<arch>.dmg.
+# Build dist/FOMOfolio.app and dist/FOMOfolio-macos-<arch>.dmg.
 # Uses the active Python if one is set up (CI), otherwise ./venv.
 set -euo pipefail
 
@@ -19,18 +19,18 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements-build.txt
 
 rm -rf build dist
-python -m PyInstaller --noconfirm InvestTrack.spec
+python -m PyInstaller --noconfirm FOMOfolio.spec
 
 # Ad-hoc signature so Gatekeeper does not report the app as damaged.
-codesign --force --deep --sign - dist/InvestTrack.app
+codesign --force --deep --sign - dist/FOMOfolio.app
 
 ARCH="$(uname -m)"
 [[ "$ARCH" == "x86_64" ]] && ARCH="x64"
-DMG="dist/InvestTrack-macos-${ARCH}.dmg"
+DMG="dist/FOMOfolio-macos-${ARCH}.dmg"
 STAGE="$(mktemp -d)"
-cp -R dist/InvestTrack.app "$STAGE/"
+cp -R dist/FOMOfolio.app "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname InvestTrack -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+hdiutil create -volname FOMOfolio -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
 
-echo "Built dist/InvestTrack.app and $DMG"
+echo "Built dist/FOMOfolio.app and $DMG"

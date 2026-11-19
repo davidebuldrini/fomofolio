@@ -1,4 +1,4 @@
-# Build dist\InvestTrack\InvestTrack.exe and dist\InvestTrack-windows-x64.zip.
+# Build dist\FOMOfolio\FOMOfolio.exe and dist\FOMOfolio-windows-x64.zip.
 # Uses the active Python if one is set up (CI), otherwise .\venv.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -14,8 +14,8 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 if (Test-Path build) { Remove-Item -Recurse -Force build }
 if (Test-Path dist) { Remove-Item -Recurse -Force dist }
-python -m PyInstaller --noconfirm InvestTrack.spec
+python -m PyInstaller --noconfirm FOMOfolio.spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
-Compress-Archive -Path dist\InvestTrack -DestinationPath dist\InvestTrack-windows-x64.zip -Force
-Write-Host "Built dist\InvestTrack\InvestTrack.exe and dist\InvestTrack-windows-x64.zip"
+Compress-Archive -Path dist\FOMOfolio -DestinationPath dist\FOMOfolio-windows-x64.zip -Force
+Write-Host "Built dist\FOMOfolio\FOMOfolio.exe and dist\FOMOfolio-windows-x64.zip"

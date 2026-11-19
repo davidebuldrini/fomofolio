@@ -1,5 +1,5 @@
 """
-InvestTrack - Stock Portfolio Tracker
+FOMOfolio - Stock Portfolio Tracker
 Main application entry point.
 """
 import streamlit as st

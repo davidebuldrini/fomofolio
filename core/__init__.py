@@ -1,3 +1,3 @@
 """
-Core business logic for InvestTrack application.
+Core business logic for FOMOfolio application.
 """

@@ -1,16 +1,16 @@
-# InvestTrack - Code Structure
+# FOMOfolio - Code Structure
 
 ## 📁 Project Organization
 
 The code has been restructured into a modular architecture to improve readability and maintainability.
 
 ```
-investtrack/
+fomofolio/
 │
 ├── app.py                          # Main application entry point
 ├── config.py                       # Global constants and configurations
 ├── launcher.py                     # Desktop app entry point (native window + server)
-├── InvestTrack.spec                # PyInstaller build spec (macOS .app / Windows .exe)
+├── FOMOfolio.spec                # PyInstaller build spec (macOS .app / Windows .exe)
 ├── build_mac.sh / build_win.ps1    # Desktop build scripts
 ├── .github/workflows/build.yml     # CI: tests, desktop builds, releases
 │
@@ -71,7 +71,7 @@ investtrack/
 **Functions:**
 - `load_transactions()`: Reads and validates the saved file; reports unreadable files or invalid rows
 - `save_transactions()`: Atomic write (temp file + replace)
-- `data_file_path()`: `data/transactions.csv`, or `INVESTTRACK_DATA_FILE`
+- `data_file_path()`: `data/transactions.csv`, or `FOMOFOLIO_DATA_FILE`
 - `to_csv_bytes()`: CSV used by both the saved file and the export
 
 ### `ui/state.py` - Session State

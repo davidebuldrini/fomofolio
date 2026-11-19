@@ -16,8 +16,9 @@ DEFAULT_DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "transacti
 
 
 def data_file_path():
-    """Location of the saved transactions. Override with INVESTTRACK_DATA_FILE."""
-    override = os.environ.get("INVESTTRACK_DATA_FILE")
+    """Location of the saved transactions. Override with FOMOFOLIO_DATA_FILE
+    (the old INVESTTRACK_DATA_FILE is still honoured)."""
+    override = os.environ.get("FOMOFOLIO_DATA_FILE") or os.environ.get("INVESTTRACK_DATA_FILE")
     return Path(override).expanduser() if override else DEFAULT_DATA_FILE
 
 
