@@ -9,6 +9,10 @@ investtrack/
 │
 ├── app.py                          # Main application entry point
 ├── config.py                       # Global constants and configurations
+├── launcher.py                     # Desktop app entry point (native window + server)
+├── InvestTrack.spec                # PyInstaller build spec (macOS .app / Windows .exe)
+├── build_mac.sh / build_win.ps1    # Desktop build scripts
+├── .github/workflows/build.yml     # CI: tests, desktop builds, releases
 │
 ├── core/                           # Business logic
 │   ├── __init__.py

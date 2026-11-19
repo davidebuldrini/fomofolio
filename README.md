@@ -37,6 +37,47 @@ The file has the same columns as the CSV export. Writes are atomic, so an interr
 
 Open the **Transactions** tab to change cells, add rows at the bottom, or select rows and press Delete. Nothing changes until you press **Save changes**; **Discard changes** restores the saved data. Rows with invalid values are listed and nothing is saved until they are fixed.
 
+## Desktop app (macOS and Windows)
+
+InvestTrack can be packaged as a standalone desktop app with Python included. It opens in a native window, and closing the window stops the app.
+
+Build on macOS (creates `dist/InvestTrack.app` and a `.dmg`):
+
+```bash
+./build_mac.sh
+```
+
+Build on Windows (creates `dist\InvestTrack\InvestTrack.exe` and a `.zip`):
+
+```powershell
+.\build_win.ps1
+```
+
+Each build targets the system it runs on (Apple Silicon, Intel Mac or Windows). PyInstaller cannot cross-compile.
+
+The desktop app saves transactions in a per-user folder, not in `data/`:
+
+- macOS: `~/Library/Application Support/InvestTrack/transactions.csv`
+- Windows: `%APPDATA%\InvestTrack\transactions.csv`
+
+To move existing data to the macOS app:
+
+```bash
+mkdir -p ~/Library/Application\ Support/InvestTrack && cp data/transactions.csv ~/Library/Application\ Support/InvestTrack/
+```
+
+The apps are not signed with a developer certificate. The first time, open them with right-click → Open on macOS, or More info → Run anyway on Windows.
+
+### Automatic builds on GitHub
+
+`.github/workflows/build.yml` runs the tests and builds the three versions (macOS arm64, macOS Intel, Windows). Pushing a tag such as `v1.0.0` publishes them in a GitHub Release:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+You can also start it from the Actions tab (Run workflow). The files are then available as run artifacts.
+
 ## Installation
 Make sure you have the virtual environment active.
 

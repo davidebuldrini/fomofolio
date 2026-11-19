@@ -6,3 +6,5 @@ venv/
 .cursor/
 .pytest_cache/
 data/
+build/
+dist/
